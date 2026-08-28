@@ -253,6 +253,24 @@ export function makeRouterAdapter(ctx: HostCtx): unknown {
     providerRetryPolicy() {
       return undefined
     },
+    /** Provider-side request-image pricing for one exact route — added to the
+     * adapter contract in `@deepseek-ai/dsh-llm` 0.1.2-alpha.1, where the
+     * runtime forwards it WITHOUT an existence check:
+     *
+     *   return this.adapters.get(provider)?.adapter.imageRequestPricing(provider, model)
+     *
+     * The `?.` only guards an unregistered provider, so an adapter missing the
+     * method throws `TypeError`. `token-meter` calls it unconditionally on every
+     * `measure()` (image or not), and `compaction-basic` calls `measure()`
+     * without a try/catch — both mounted in the base bundle — so a smart-routing
+     * session would die once anything measured tokens.
+     *
+     * `undefined` is the base-class answer and the honest one for a virtual
+     * route: pricing belongs to whichever target actually serves the request,
+     * and consumers fall back to their own neutral estimate. */
+    imageRequestPricing() {
+      return undefined
+    },
     async listModels(provider: string) {
       const out: Array<{ provider: string; id: string; name: string; description?: string }> = []
       if (provider === COMPOSITE_ROUTE) {

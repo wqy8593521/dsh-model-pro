@@ -462,6 +462,12 @@ assert(rinfo && rinfo.id === 'auto' && rinfo.context && rinfo.context.contextWin
 // `stream`, so a router adapter without it fails every request with
 // "registration.adapter.prepareCall is not a function" (issue #1).
 assert(typeof rreg.adapter.prepareCall === 'function', 'router adapter exposes prepareCall (dsh-llm >= 0.1.1-rc.2 contract)')
+
+// `imageRequestPricing` joined the contract in 0.1.2-alpha.1 and the runtime
+// forwards it with no existence check, so a missing method is a TypeError the
+// moment token-meter measures a routed session. A virtual route declares none.
+assert(typeof rreg.adapter.imageRequestPricing === 'function', 'router adapter exposes imageRequestPricing (dsh-llm >= 0.1.2-alpha.1 contract)')
+assert(rreg.adapter.imageRequestPricing('router', 'auto') === undefined, 'virtual route declares no image pricing (consumers use their own estimate)')
 const rprep = await rreg.adapter.prepareCall('router', 'auto')
 assert(rprep && rprep.model && rprep.model.id === 'auto' && typeof rprep.stream === 'function', 'prepareCall returns { model, stream }: ' + JSON.stringify(rprep && rprep.model))
 assert(rprep.model.context && rprep.model.context.contextWindow === 200000, 'prepareCall carries target metadata through')
