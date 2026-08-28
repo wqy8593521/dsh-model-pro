@@ -455,6 +455,29 @@ const rm = await rreg.adapter.listModels('router')
 assert(Array.isArray(rm) && rm.some((m) => m.id === 'auto'), 'router lists named routes as models')
 const rinfo = await rreg.adapter.resolveModel('router', 'auto')
 assert(rinfo && rinfo.id === 'auto' && rinfo.context && rinfo.context.contextWindow === 200000, 'router resolves route to first target metadata')
+
+// --- adapter.prepareCall: the contract dsh-llm >= 0.1.1-rc.2 dispatches through.
+// That runtime calls `registration.adapter.prepareCall(provider, model, signal)`
+// from BOTH its prepared-call and direct-stream paths and uses ONLY the returned
+// `stream`, so a router adapter without it fails every request with
+// "registration.adapter.prepareCall is not a function" (issue #1).
+assert(typeof rreg.adapter.prepareCall === 'function', 'router adapter exposes prepareCall (dsh-llm >= 0.1.1-rc.2 contract)')
+const rprep = await rreg.adapter.prepareCall('router', 'auto')
+assert(rprep && rprep.model && rprep.model.id === 'auto' && typeof rprep.stream === 'function', 'prepareCall returns { model, stream }: ' + JSON.stringify(rprep && rprep.model))
+assert(rprep.model.context && rprep.model.context.contextWindow === 200000, 'prepareCall carries target metadata through')
+let sawPreparedPong = false
+let pguard = 0
+for await (const c of rprep.stream({
+  provider: 'router', model: 'auto',
+  messages: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
+  temperature: 0, maxTokens: 16, signal: undefined,
+})) {
+  if (c && c.type === 'text-delta' && c.text === 'pong') sawPreparedPong = true
+  if (++pguard >= 4) break
+}
+assert(sawPreparedPong, 'prepareCall().stream() dispatches through the router')
+assert(log.lastConfig && log.lastConfig.provider === 'opencode-go', 'prepareCall dispatch still forwards to the route target: ' + JSON.stringify(log.lastConfig))
+
 let sawPong = false
 let guard = 0
 for await (const c of rreg.adapter.stream({
@@ -795,6 +818,15 @@ for await (const c of creg.adapter.stream({ provider: 'composite', model: 'mixtu
 }
 assert(gotComp === 'pong', 'composite streams through owning member')
 assert(log.lastConfig && (log.lastConfig.provider === 'comp-a' || log.lastConfig.provider === 'comp-b') && log.lastConfig.model === 'gpt-4o', 'composite forwards to owning member: ' + JSON.stringify(log.lastConfig))
+
+// composite honours the same prepareCall contract as the router route (issue #1)
+const cprep = await creg.adapter.prepareCall('composite', 'mixture::gpt-4o')
+assert(cprep && cprep.model && cprep.model.id === 'mixture::gpt-4o' && typeof cprep.stream === 'function', 'composite prepareCall returns { model, stream }')
+let gotCompPrepared = ''
+for await (const c of cprep.stream({ provider: 'composite', model: 'mixture::gpt-4o', messages: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }], temperature: 0 })) {
+  if (c && c.type === 'text-delta' && c.text === 'pong') gotCompPrepared = 'pong'
+}
+assert(gotCompPrepared === 'pong', 'composite prepareCall().stream() dispatches through the owning member')
 
 // composite stats + request log recorded
 r = await P('get-route-stats')

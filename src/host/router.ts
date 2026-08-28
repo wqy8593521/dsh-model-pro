@@ -243,7 +243,10 @@ export function makeRouterAdapter(ctx: HostCtx): unknown {
   const cursor: Record<string, number[]> = {}
   const pin: Record<string, RouteTarget> = {}
 
-  return {
+  // Bound to a const so `prepareCall` can delegate to the sibling methods
+  // without relying on `this` (the object is handed to the llm runtime, which
+  // may destructure or re-bind it).
+  const adapter = {
     providerInfo(provider: string) {
       return { id: provider, name: provider === COMPOSITE_ROUTE ? '组合提供商' : '智能路由' }
     },
@@ -288,6 +291,22 @@ export function makeRouterAdapter(ctx: HostCtx): unknown {
         return { ...info, provider, id: model, name: model }
       } catch {
         return base
+      }
+    },
+    /** Bind exact model metadata and the eventual dispatch to one adapter
+     * generation — the contract `@deepseek-ai/dsh-llm` >= 0.1.1-rc.2 calls from
+     * BOTH its prepared-call and direct-stream paths (`registration.adapter
+     * .prepareCall(...)`), where a missing method fails the request outright.
+     *
+     * Older runtimes (<= 0.1.1-rc.1) never call this and keep using
+     * `resolveModel` + `stream` directly, so defining it is purely additive:
+     * one build serves both. The shape mirrors `LlmAdapter`'s own default —
+     * resolve the model, hand back a stream entry point — because the router
+     * reads its table live per call and has no generation state to pin. */
+    async prepareCall(provider: string, model: string, signal?: AbortSignal) {
+      return {
+        model: await adapter.resolveModel(provider, model, signal),
+        stream: (options: Record<string, any>) => adapter.stream(options),
       }
     },
     async *stream(options: Record<string, any>): AsyncIterable<unknown> {
@@ -531,6 +550,7 @@ export function makeRouterAdapter(ctx: HostCtx): unknown {
       }
     },
   }
+  return adapter
 }
 
 async function tryReturn(iterator: AsyncIterator<unknown>): Promise<void> {
