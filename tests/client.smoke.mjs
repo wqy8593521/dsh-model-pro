@@ -82,8 +82,10 @@ function renderAt(rootVNode, fake, path, out) {
     return
   }
   if (typeof type === 'string') {
-    // Keep clickable elements so the test can drive tab switches.
-    out.push({ tag: type, className: props?.className || '', text: collectText(children), onClick: props?.onClick })
+    // Keep clickable elements so the test can drive tab switches, plus the raw
+    // props so assertions can inspect non-click behaviour (drag handlers, input
+    // type/min/max) without a second render pass.
+    out.push({ tag: type, className: props?.className || '', text: collectText(children), onClick: props?.onClick, props: props || {} })
     for (let i = 0; i < children.length; i++) renderAt(children[i], fake, `${path}:${i}`, out)
     return
   }
@@ -136,6 +138,7 @@ const testProviders = [
 // { ok, value } wrapping the business { ok, ... } payload.
 // ---------------------------------------------------------------------------
 const uiPrefsState = { showRouteBadge: true }
+const retryPrefsState = { maxRetries: 0 }
 const businessFor = (method, payload) => {
   if (method === 'listProviders') return { ok: true, providers: testProviders, protocols: ['openai-completions', 'openai-responses', 'anthropic-messages'], writable: true }
   if (method === 'listRoutes') return { ok: true, routes: { auto: { strategy: 'priority', targets: [{ provider: 'deepseek', model: 'deepseek-chat' }] } } }
@@ -149,6 +152,8 @@ const businessFor = (method, payload) => {
   }
   if (method === 'getUiPrefs') return { ok: true, prefs: { ...uiPrefsState } }
   if (method === 'setUiPrefs') { Object.assign(uiPrefsState, (payload && payload.prefs) || {}); return { ok: true, prefs: { ...uiPrefsState } } }
+  if (method === 'getRetryPrefs') return { ok: true, prefs: { ...retryPrefsState }, max: 20 }
+  if (method === 'setRetryPrefs') { Object.assign(retryPrefsState, (payload && payload.prefs) || {}); return { ok: true, prefs: { ...retryPrefsState }, applied: true } }
   if (method === 'listRequestLogs') return { ok: true, entries: [{ ts: 1700000000000, sessionId: 'sess-x', route: 'auto', target: { provider: 'deepseek', model: 'deepseek-chat' }, status: 'ok', tryIndex: 1, latencyMs: 400, tokens: { in: 100, out: 200 } }] }
   return { ok: true }
 }
@@ -160,6 +165,7 @@ const remoteMethods = [
   'setApiKey', 'listRoutes', 'setRoute', 'deleteRoute', 'listComposites', 'setComposite',
   'deleteComposite', 'previewComposite', 'getRouteStats', 'listRequestLogs',
   'clearRequestLogs', 'probeTarget', 'probeAll', 'getUiPrefs', 'setUiPrefs',
+  'getRetryPrefs', 'setRetryPrefs',
 ]
 const remoteHandle = {}
 for (const m of remoteMethods) {
@@ -255,7 +261,7 @@ const all = out.map((n) => n.className)
 
 // -- structure assertions on the REBUILT bundle --
 const css = structures.join('\n')
-for (const rule of ['.mpro-root', '.mpro-segs', '.mpro-pc', '.mpro-pcActive', '.mpro-pcOff', '.mpro-pill', '.mpro-pillActive', '.mpro-pillOff', '.mpro-verdictOk', '.mpro-discoverBar', '.mpro-step', '.mpro-setupCard', '.mpro-routesTab', '.mpro-statCard', '.mpro-hdotUp', '.mpro-routeRow', '.mpro-targetRow']) {
+for (const rule of ['.mpro-root', '.mpro-segs', '.mpro-pc', '.mpro-pcActive', '.mpro-pcOff', '.mpro-pill', '.mpro-pillActive', '.mpro-pillOff', '.mpro-verdictOk', '.mpro-discoverBar', '.mpro-step', '.mpro-setupCard', '.mpro-routesTab', '.mpro-statCard', '.mpro-hdotUp', '.mpro-routeRow', '.mpro-targetRow', '.mpro-dragHandle', '.mpro-targetRowOver', '.mpro-moveBtn', '.mpro-retryBox', '.mpro-retrySlider']) {
   assert(css.includes(rule), `styles include ${rule}`)
 }
 
@@ -286,6 +292,59 @@ assert(outR.some((n) => String(n.className).includes('mpro-routeRow')), 'renders
 assert(outR.some((n) => /tabComposites/i.test(n.text || '')), 'renders composite-tab button')
 assert(outR.some((n) => /tabObservability/i.test(n.text || '')), 'renders observability-tab button')
 assert(outR.some((n) => /tabProbe/i.test(n.text || '')), 'renders probe-tab button')
+
+// -- target rows are drag-reorderable, with keyboard-accessible ↑/↓ equivalents --
+// The old UI put a row of "↑1 ↓ ↑2 ↓ …" buttons under the list; reordering now
+// lives on each row so the control sits where the thing it moves is.
+assert(!outR.some((n) => /^↑\d/.test(String(n.text || ''))), 'the old numbered ↑N reorder buttons are gone')
+{
+  const openEditor = outR.find((n) => n.tag === 'button' && /routeAdd/i.test(n.text || '') && typeof n.onClick === 'function')
+  assert(openEditor, 'route editor can be opened')
+  openEditor.onClick()
+  const outE = []
+  renderAt(tree, fake, 'root', outE)
+  await new Promise((r) => setTimeout(r, 10))
+  renderAt(tree, fake, 'root', outE)
+
+  const addTarget = outE.find((n) => n.tag === 'button' && /routeAddTarget/i.test(n.text || '') && typeof n.onClick === 'function')
+  assert(addTarget, 'editor exposes an add-target button')
+  addTarget.onClick()
+  addTarget.onClick()
+  const outT = []
+  renderAt(tree, fake, 'root', outT)
+  await new Promise((r) => setTimeout(r, 10))
+  renderAt(tree, fake, 'root', outT)
+
+  const rows = outT.filter((n) => String(n.className).includes('mpro-targetRow'))
+  assert(rows.length >= 2, 'two target rows render: ' + rows.length)
+  assert(rows.every((n) => n.props.draggable === true), 'every target row is draggable')
+  assert(rows.every((n) => typeof n.props.onDragStart === 'function' && typeof n.props.onDrop === 'function'), 'rows carry dragStart + drop handlers')
+  // onDragOver must exist and preventDefault, or the browser never fires drop.
+  assert(rows.every((n) => typeof n.props.onDragOver === 'function'), 'rows carry a dragOver handler (required for drop to fire)')
+  assert(outT.some((n) => String(n.className).includes('mpro-dragHandle')), 'each row shows a drag grip')
+  assert(outT.filter((n) => String(n.className).includes('mpro-moveBtn')).length >= 4, 'each row keeps ↑/↓ buttons for keyboard users')
+
+  // A drop from row 0 onto row 1 must REORDER (remove+insert), not swap.
+  const first = rows[0]
+  first.props.onDragStart({ dataTransfer: { effectAllowed: '', setData() {} } })
+  const second = rows[1]
+  second.props.onDrop({ preventDefault() {}, dataTransfer: {} })
+  const outD = []
+  renderAt(tree, fake, 'root', outD)
+  await new Promise((r) => setTimeout(r, 10))
+  assert(outD.filter((n) => String(n.className).includes('mpro-targetRow')).length >= 2, 'rows survive a drop')
+}
+
+// -- retry budget: a slider, not a number spinner --
+assert(outR.some((n) => String(n.className).includes('mpro-retryBox')), 'renders the retry-budget box')
+{
+  const slider = outR.find((n) => String(n.className).includes('mpro-retrySlider'))
+  assert(slider, 'retry budget uses a slider')
+  assert(slider.props.type === 'range', 'the retry control is type=range, not a number spinner')
+  assert(Number(slider.props.min) === 0 && Number(slider.props.max) === 20, 'slider bounds come from the host ceiling: ' + slider.props.min + '-' + slider.props.max)
+  // Committing on release (not per drag frame) keeps one settings write per edit.
+  assert(typeof slider.props.onMouseUp === 'function' && typeof slider.props.onKeyUp === 'function', 'slider commits on release and on keyboard release')
+}
 
 // -- observability tab renders stat cards + request-log table area --
 const obsTab = outR.find((n) => n.tag === 'button' && /tabObservability/i.test(n.text || ''))

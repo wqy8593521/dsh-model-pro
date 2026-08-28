@@ -51,6 +51,8 @@ export const METHODS: ReadonlyArray<readonly [string, string]> = [
   ['probe-all', 'probeAll'],
   ['get-ui-prefs', 'getUiPrefs'],
   ['set-ui-prefs', 'setUiPrefs'],
+  ['get-retry-prefs', 'getRetryPrefs'],
+  ['set-retry-prefs', 'setRetryPrefs'],
 ] as const
 
 /** Client-facade kebab → camel map. */

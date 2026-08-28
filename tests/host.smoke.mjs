@@ -908,6 +908,59 @@ assert(r.ok && r.routes && Object.keys(r.routes).length >= 1, 'uiPrefs write pre
 r = await P('set-ui-prefs', { prefs: { showRouteBadge: true } })
 assert(r.ok && r.prefs.showRouteBadge === true, 'set-ui-prefs restores the default')
 
+// --- retry budget: the policy DSH freezes at adapter registration ------------
+// A routed failure used to normalize to code UNKNOWN, which no retry policy
+// lists as retryable, so DSH never retried a route no matter how it was
+// configured. The adapter now reports a budget and throws a dedicated code.
+r = await P('get-retry-prefs')
+assert(r.ok && r.prefs && r.prefs.maxRetries === 0, 'retry budget defaults to 0 (historical behaviour): ' + JSON.stringify(r))
+assert(typeof r.max === 'number' && r.max > 0, 'get-retry-prefs advertises the UI ceiling')
+
+// 0 must resolve to `undefined` so DSH keeps its own defaults rather than a
+// policy that claims zero retries.
+assert(rreg.adapter.providerRetryPolicy('router') === undefined, 'a zero budget reports no policy (DSH defaults apply)')
+
+r = await P('set-retry-prefs', { prefs: { maxRetries: 3 } })
+assert(r.ok && r.prefs.maxRetries === 3, 'set-retry-prefs stores the budget: ' + JSON.stringify(r))
+assert(log.section().routerRetry && log.section().routerRetry.maxRetries === 3, 'budget persisted as a section foreign key: ' + JSON.stringify(Object.keys(log.section())))
+r = await P('list-routes')
+assert(r.ok && r.routes && Object.keys(r.routes).length >= 1, 'retry write preserved sibling keys (routes intact)')
+
+const pol = rreg.adapter.providerRetryPolicy('router')
+assert(pol && pol.mode === 'normal' && pol.maxRetries === 3, 'adapter reports the configured budget: ' + JSON.stringify(pol))
+assert(Array.isArray(pol.retryableCodes) && pol.retryableCodes.includes('ROUTE_EXHAUSTED'), 'route exhaustion is the retryable code')
+assert(!pol.retryableCodes.includes('UNKNOWN'), 'UNKNOWN stays unretryable — only route exhaustion opts in')
+assert(pol.initialDelayMs > 0 && pol.maxDelayMs >= pol.initialDelayMs, 'backoff bounds are coherent: ' + JSON.stringify(pol))
+
+// Out-of-range input is clamped, never rejected: a bad value must not leave the
+// provider unregisterable.
+r = await P('set-retry-prefs', { prefs: { maxRetries: 9999 } })
+assert(r.ok && r.prefs.maxRetries <= 20, 'an oversized budget is clamped to the ceiling: ' + JSON.stringify(r))
+r = await P('set-retry-prefs', { prefs: { maxRetries: -5 } })
+assert(r.ok && r.prefs.maxRetries === 20, 'a negative budget is ignored, keeping the last good value: ' + JSON.stringify(r))
+
+// The thrown route-exhaustion error must carry the code in the exact shape
+// dsh-llm's normalizeLlmFailure trusts: own `code` === own `failure.code`.
+{
+  llm.failProviders.add('deadgw')
+  await P('set-route', { alias: 'all-dead', strategy: 'priority', targets: [{ provider: 'deadgw', model: 'nope' }] })
+  let thrown
+  try {
+    const it = rreg.adapter.stream({ provider: 'router', model: 'all-dead', messages: [] })[Symbol.asyncIterator]()
+    for (let n = await it.next(); !n.done; n = await it.next()) { /* drain */ }
+  } catch (e) {
+    thrown = e
+  }
+  assert(thrown, 'a route with no reachable target throws')
+  assert(thrown.code === 'ROUTE_EXHAUSTED', 'exhaustion carries a retryable code: ' + String(thrown && thrown.code))
+  assert(thrown.failure && thrown.failure.code === thrown.code, 'own failure.code agrees with own code (else dsh-llm discards it)')
+  assert(typeof thrown.failure.message === 'string' && thrown.failure.message.length > 0, 'carried failure has a non-empty message')
+  llm.failProviders.delete('deadgw')
+  await P('delete-route', { alias: 'all-dead' })
+}
+r = await P('set-retry-prefs', { prefs: { maxRetries: 0 } })
+assert(r.ok && r.prefs.maxRetries === 0, 'budget restored to the default')
+
 // probe-target marks up a healthy target
 r = await P('probe-target', { provider: 'comp-a', model: 'gpt-4o' })
 assert(r.ok && r.latencyMs >= 0, 'probe-target ok: ' + JSON.stringify(r))

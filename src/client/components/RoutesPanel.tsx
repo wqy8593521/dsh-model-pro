@@ -87,6 +87,9 @@ function RouteListPanel({ t, call, providers }: Props) {
   const [editing, setEditing] = React.useState<string | null>(null)
   const [busy, setBusy] = React.useState(false)
   const [msg, setMsg] = React.useState('')
+  /** Row index being dragged, and the row currently hovered as a drop target. */
+  const [dragFrom, setDragFrom] = React.useState<number | null>(null)
+  const [dragOver, setDragOver] = React.useState<number | null>(null)
 
   const refresh = React.useCallback(async () => {
     try {
@@ -149,6 +152,18 @@ function RouteListPanel({ t, call, providers }: Props) {
       if (j < 0 || j >= arr.length) return arr
       const next = [...arr]
       ;[next[i], next[j]] = [next[j], next[i]]
+      return next
+    })
+  }
+  /** Drag-and-drop reorder: REMOVE then INSERT, so dragging row 0 to the end
+   * shifts everything between up by one. A swap (like moveTarget) would be wrong
+   * for non-adjacent drops — it would scramble the priority order. */
+  const reorderTarget = (from: number, to: number) => {
+    setTargets((arr) => {
+      if (from === to || from < 0 || to < 0 || from >= arr.length || to >= arr.length) return arr
+      const next = [...arr]
+      const [moved] = next.splice(from, 1)
+      next.splice(to, 0, moved)
       return next
     })
   }
@@ -262,7 +277,32 @@ function RouteListPanel({ t, call, providers }: Props) {
             </div>
 
             {targets.map((row, i) => (
-              <div key={i} className="mpro-targetRow">
+              <div
+                key={i}
+                className={dragOver === i && dragFrom !== null && dragFrom !== i ? 'mpro-targetRow mpro-targetRowOver' : 'mpro-targetRow'}
+                draggable
+                onDragStart={(e) => {
+                  setDragFrom(i)
+                  // Firefox refuses to start a drag without transfer data.
+                  e.dataTransfer.effectAllowed = 'move'
+                  try { e.dataTransfer.setData('text/plain', String(i)) } catch { /* ignore */ }
+                }}
+                onDragOver={(e) => {
+                  if (dragFrom === null) return
+                  e.preventDefault() // required, or the drop event never fires
+                  e.dataTransfer.dropEffect = 'move'
+                  if (dragOver !== i) setDragOver(i)
+                }}
+                onDrop={(e) => {
+                  e.preventDefault()
+                  if (dragFrom !== null) reorderTarget(dragFrom, i)
+                  setDragFrom(null)
+                  setDragOver(null)
+                }}
+                onDragEnd={() => { setDragFrom(null); setDragOver(null) }}
+              >
+                <span className="mpro-dragHandle" title={t('routeDragHint')} aria-hidden="true">⠿</span>
+                <span className="mpro-targetIdx" title={t('routeOrderHint')}>{i + 1}</span>
                 <select
                   className="mpro-input mpro-select"
                   value={row.provider}
@@ -295,20 +335,29 @@ function RouteListPanel({ t, call, providers }: Props) {
                     onChange={(e) => setTarget(i, { enabled: e.target.checked })}
                   />
                 </label>
+                {/* Keyboard-accessible equivalent of dragging: a pointer-only
+                    reorder would lock out keyboard and screen-reader users. */}
+                <span className="mpro-moveBtns">
+                  <button
+                    className="mpro-moveBtn"
+                    disabled={i === 0}
+                    title={t('routeMoveUp')}
+                    aria-label={t('routeMoveUp')}
+                    onClick={() => moveTarget(i, -1)}
+                  >↑</button>
+                  <button
+                    className="mpro-moveBtn"
+                    disabled={i === targets.length - 1}
+                    title={t('routeMoveDown')}
+                    aria-label={t('routeMoveDown')}
+                    onClick={() => moveTarget(i, 1)}
+                  >↓</button>
+                </span>
                 <button className="mpro-btn mpro-btnSm mpro-btnDanger" onClick={() => removeTarget(i)}>×</button>
               </div>
             ))}
 
-            {targets.length > 1 && (
-              <div className="mpro-hint">
-                {t('routeOrderHint')} {targets.map((_, i) => (
-                  <span key={i}>
-                    <button className="mpro-btn mpro-btnSm" disabled={i === 0} onClick={() => moveTarget(i, -1)}>↑{i + 1}</button>
-                    <button className="mpro-btn mpro-btnSm" disabled={i === targets.length - 1} onClick={() => moveTarget(i, 1)}>↓</button>{' '}
-                  </span>
-                ))}
-              </div>
-            )}
+            {targets.length > 1 ? <p className="mpro-hint">{t('routeDragHint')}</p> : null}
 
             <div className="mpro-cfgGrid">
               <label className="mpro-toggleCk">
@@ -366,8 +415,91 @@ function RouteListPanel({ t, call, providers }: Props) {
           </div>
         )}
 
+        {/* Retry budget is GLOBAL to the router/composite provider routes (DSH
+            reads one policy per provider route, frozen at registration), so it
+            belongs beside the route list rather than inside one route's editor. */}
+        <RetryBudget t={t} call={call} />
+
         {msg ? <span className="mpro-inlineStatus" style={{ marginTop: 6, display: 'inline-block' }}>{msg}</span> : null}
       </div>
+    </div>
+  )
+}
+
+/* --------------------------------------------------------------------------
+ * Retry budget — DSH's own request-retry ceiling for the router routes
+ * ------------------------------------------------------------------------ */
+
+/** DSH retries a failed model request through its `llm-retry` plugin, using ONE
+ * policy per provider route that is frozen when the adapter registers. A router
+ * failure used to normalize to code `UNKNOWN`, which no policy lists as
+ * retryable, so a routed request never retried. The host now throws a dedicated
+ * retryable code and reports this budget; saving re-registers the adapter so the
+ * change applies without a reload. */
+function RetryBudget({ t, call }: { t: TFunc; call: CallFn }) {
+  const [value, setValue] = React.useState('0')
+  const [saved, setSaved] = React.useState('0')
+  const [max, setMax] = React.useState(20)
+  const [busy, setBusy] = React.useState(false)
+  const [note, setNote] = React.useState('')
+
+  React.useEffect(() => {
+    void (async () => {
+      try {
+        const r = await call('get-retry-prefs')
+        const n = String(r?.prefs?.maxRetries ?? 0)
+        setValue(n)
+        setSaved(n)
+        if (typeof r?.max === 'number') setMax(r.max)
+      } catch { /* keep defaults — the control still saves */ }
+    })()
+  }, [call])
+
+  const commit = async (next: string) => {
+    const n = Math.max(0, Math.min(max, Math.floor(Number(next) || 0)))
+    setBusy(true)
+    setNote('')
+    try {
+      const r = await call('set-retry-prefs', { prefs: { maxRetries: n } })
+      const applied = String(r?.prefs?.maxRetries ?? n)
+      setValue(applied)
+      setSaved(applied)
+      // `applied: false` means the running registration could not be swapped, so
+      // the value is stored but only takes effect after the next load.
+      setNote(r?.applied === false ? t('retryNeedsReload') : t('retrySaved'))
+    } catch (e) {
+      setValue(saved)
+      setNote(String((e as Error)?.message || e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="mpro-retryBox">
+      <div className="mpro-retryHead">
+        <span className="mpro-fieldLabel">{t('retryTitle')}</span>
+        {note ? <span className="mpro-inlineStatus">{note}</span> : null}
+      </div>
+      <div className="mpro-retryRow">
+        <input
+          className="mpro-retrySlider"
+          type="range"
+          min={0}
+          max={max}
+          step={1}
+          value={value}
+          disabled={busy}
+          onChange={(e) => setValue(e.target.value)}
+          // Commit on release, not on every drag frame: each save writes settings
+          // and re-registers the adapter.
+          onMouseUp={(e) => void commit((e.target as HTMLInputElement).value)}
+          onTouchEnd={(e) => void commit((e.target as HTMLInputElement).value)}
+          onKeyUp={(e) => void commit((e.target as HTMLInputElement).value)}
+        />
+        <span className="mpro-retryValue">{value === '0' ? t('retryOff') : value}</span>
+      </div>
+      <p className="mpro-hint">{t('retryHint')}</p>
     </div>
   )
 }

@@ -30,6 +30,18 @@ export interface RouteConfig {
   timeoutMs?: number
 }
 
+/** Global retry preferences for the two synthetic router routes.
+ *
+ * This is DSH's OWN request-retry budget — executed by the `llm-retry` plugin on
+ * the `agent/request-error` extension point — not the router's internal target
+ * fallback. DSH reads one resolved policy per PROVIDER route at registration
+ * time, so this value is global to `router` + `composite` rather than per-route. */
+export interface RetryPrefs {
+  /** Retries allowed AFTER the first attempt. 0 preserves the historical
+   * behaviour: a routed request fails as soon as every target has been tried. */
+  maxRetries: number
+}
+
 /** One named smart route: a bundle of targets picked by a strategy. */
 export interface RouteSpec {
   strategy: RouteStrategy

@@ -71,3 +71,31 @@ export const ROUTE_STATS_KEY = 'routeStats'
  * UI preferences — e.g. whether the conversation badge that shows which
  * provider actually served each turn is displayed. */
 export const UI_PREFS_KEY = 'uiPrefs'
+
+/** Foreign key (inside the llm-pi-ai settings section) holding the global
+ * request-retry budget this plugin reports for its two synthetic routes. */
+export const RETRY_KEY = 'routerRetry'
+
+/**
+ * The failure code the router attaches once every target of a route has been
+ * tried and failed.
+ *
+ * A dedicated code is required, not cosmetic: DSH's retry executor only retries
+ * codes the provider's own policy lists as retryable, and an adapter that
+ * throws a plain `Error` normalizes to `UNKNOWN`, which no default policy
+ * lists. Declaring THIS code retryable in `providerRetryPolicy()` lets a routed
+ * request retry the whole target sweep without widening the meaning of the
+ * shared transient codes (RATE_LIMIT / SERVER / TIMEOUT / TRANSPORT).
+ */
+export const ROUTE_EXHAUSTED_CODE = 'ROUTE_EXHAUSTED'
+
+/** Retry budget applied when nothing is configured: none. DSH's own default is
+ * 5, but a routed request has ALREADY tried every target by the time it fails,
+ * so retrying was historically a no-op here — the thrown code was never
+ * retryable. Defaulting to 0 keeps that exact behaviour until a user opts in. */
+export const DEFAULT_ROUTER_MAX_RETRIES = 0
+
+/** Upper bound offered by the UI. DSH accepts any non-negative safe integer,
+ * but a routed retry re-runs the ENTIRE target sweep, so a large budget
+ * multiplies wall-clock time by the number of targets. */
+export const MAX_ROUTER_MAX_RETRIES = 20

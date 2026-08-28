@@ -19,14 +19,19 @@
 
 import type { HostCtx } from './utils'
 import { readRoutes, wireModelOf } from './utils'
-import { ROUTER_ROUTE, COMPOSITE_ROUTE, COMPOSITE_SEP, DEFAULT_ROUTE_STRATEGY } from '../shared/constants'
+import { ROUTER_ROUTE, COMPOSITE_ROUTE, COMPOSITE_SEP, DEFAULT_ROUTE_STRATEGY, ROUTE_EXHAUSTED_CODE } from '../shared/constants'
 import type { RouteSpec, RouteTarget, RouteStrategy, TargetHealth } from '../shared/types'
 import { readComposites, decodeCompositeModel, compositeTargetsFor, resolveCompositeModels } from './composite'
 import { getHealthTracker } from './health'
 import { getStatsRecorder } from './statsStore'
+import { buildRouterRetryPolicy } from './retryPolicy'
 
 type LlmLike = {
-  registerAdapter(providers: string[], adapter: unknown): () => void
+  registerAdapter(providers: string[], adapter: unknown): (() => void) & {
+    /** Swap the registered route set (and re-read the adapter's retry policy).
+     * Present since dsh-llm rc.7; guarded at the call site regardless. */
+    replace?: (providers: string[]) => void
+  }
   resolveModelInfo(provider: string, model: string, signal?: AbortSignal): Promise<Record<string, unknown>>
   prepareCall(config: Record<string, unknown>, signal?: AbortSignal): Promise<{
     config?: Record<string, unknown>
@@ -250,8 +255,12 @@ export function makeRouterAdapter(ctx: HostCtx): unknown {
     providerInfo(provider: string) {
       return { id: provider, name: provider === COMPOSITE_ROUTE ? '组合提供商' : '智能路由' }
     },
+    /** DSH's OWN request-retry budget for this synthetic route, read once when
+     * the adapter registers (see `applyRetryPrefs` for how an edit takes
+     * effect). `undefined` means "use DSH's defaults", which is what a zero
+     * budget resolves to. */
     providerRetryPolicy() {
-      return undefined
+      return buildRouterRetryPolicy(ctx)
     },
     /** Provider-side request-image pricing for one exact route — added to the
      * adapter contract in `@deepseek-ai/dsh-llm` 0.1.2-alpha.1, where the
@@ -563,12 +572,40 @@ export function makeRouterAdapter(ctx: HostCtx): unknown {
       }
 
       if (!committed) {
-        // Final report for the aggregate failure.
-        throw new Error(`智能路由「${model}」全部目标失败：${lastErr || '无可用目标'}`)
+        // Final report for the aggregate failure. The code matters: DSH's retry
+        // executor only retries failures whose code the provider's policy lists
+        // as retryable, and a plain Error normalizes to `UNKNOWN` — which no
+        // policy lists — so route exhaustion could never be retried.
+        //
+        // `normalizeLlmFailure` trusts a carried failure ONLY when the error's
+        // own `code` and own `failure.code` agree, so both are set to the same
+        // value; anything else is discarded and falls back to `UNKNOWN`.
+        throw routeExhausted(`智能路由「${model}」全部目标失败：${lastErr || '无可用目标'}`)
       }
     },
   }
   return adapter
+}
+
+/** Build the error thrown when every eligible target has failed.
+ *
+ * Carries {@link ROUTE_EXHAUSTED_CODE} in the exact shape
+ * `normalizeLlmFailure` (dsh-llm) accepts: it reads the error's OWN `code` and
+ * OWN `failure` data properties and trusts the carried snapshot only when
+ * `failure.code === code`. A mismatch — or a plain Error — degrades to
+ * `UNKNOWN`, which no retry policy lists, making the failure unretryable. */
+function routeExhausted(message: string): Error {
+  const error = new Error(message)
+  Object.defineProperties(error, {
+    code: { value: ROUTE_EXHAUSTED_CODE, enumerable: false, configurable: true, writable: true },
+    failure: {
+      value: Object.freeze({ message, code: ROUTE_EXHAUSTED_CODE }),
+      enumerable: false,
+      configurable: true,
+      writable: true,
+    },
+  })
+  return error
 }
 
 async function tryReturn(iterator: AsyncIterator<unknown>): Promise<void> {
@@ -586,6 +623,33 @@ function dedupeModels(arr: Array<{ provider: string; id: string; name: string; d
   })
 }
 
+/** The live registration handle, kept so a retry-budget edit can re-register.
+ *
+ * DSH freezes a provider's retry policy when the adapter registers, so a new
+ * budget is invisible until the registration is replaced. `handle.replace(...)`
+ * re-runs `prepareRoutes`, which re-reads `providerRetryPolicy()`. */
+let liveRegistration: { replace?: (providers: string[]) => void } | undefined
+
+/** Re-register the router adapter so a changed retry budget takes effect now.
+ *
+ * @returns true when the running registration picked up the new policy; false
+ *          when it could not (no registration yet, or a runtime without
+ *          `handle.replace`), in which case the budget still applies after the
+ *          next plugin load.
+ */
+export function applyRetryPrefs(_ctx: HostCtx): boolean {
+  const replace = liveRegistration?.replace
+  if (typeof replace !== 'function') return false
+  try {
+    replace([ROUTER_ROUTE, COMPOSITE_ROUTE])
+    return true
+  } catch {
+    // A disposed registration throws REGISTRATION_DISPOSED — the plugin is
+    // unloading, so there is nothing to refresh and nothing to report.
+    return false
+  }
+}
+
 /** Register the router adapter on both synthetic routes, tied to the fiber. */
 export function registerRouterAdapter(ctx: HostCtx): void {
   const llm = llmOf(ctx)
@@ -594,7 +658,16 @@ export function registerRouterAdapter(ctx: HostCtx): void {
   if (typeof ctxAny.effect !== 'function') return
   ctxAny.effect(() => {
     try {
-      return llm.registerAdapter([ROUTER_ROUTE, COMPOSITE_ROUTE], makeRouterAdapter(ctx))
+      const handle = llm.registerAdapter([ROUTER_ROUTE, COMPOSITE_ROUTE], makeRouterAdapter(ctx))
+      const owned = handle as unknown as { replace?: (providers: string[]) => void }
+      liveRegistration = owned
+      return () => {
+        // Clear only if this effect still owns the slot: a re-applied fiber
+        // registers the new handle BEFORE disposing the old one, so an
+        // unconditional clear would drop the live registration.
+        if (liveRegistration === owned) liveRegistration = undefined
+        handle()
+      }
     } catch {
       return () => undefined
     }
