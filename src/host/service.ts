@@ -34,6 +34,7 @@ import {
 } from './handlers/observability'
 import { getUiPrefs, setUiPrefs } from './handlers/uiPrefs'
 import { getRetryPrefs, setRetryPrefs } from './handlers/retryPrefs'
+import { getCatalogPrefs, setCatalogPrefs } from './handlers/catalogPrefs'
 
 export class ModelProRuntime extends (TypertRemoteService as any) {
   ctx: HostCtx
@@ -123,5 +124,11 @@ export class ModelProRuntime extends (TypertRemoteService as any) {
   }
   async setRetryPrefs(args: any) {
     return setRetryPrefs(this.ctx, args || {})
+  }
+  async getCatalogPrefs() {
+    return getCatalogPrefs(this.ctx)
+  }
+  async setCatalogPrefs(args: any) {
+    return setCatalogPrefs(this.ctx, args || {})
   }
 }

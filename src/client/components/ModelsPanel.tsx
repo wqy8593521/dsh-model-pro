@@ -4,8 +4,10 @@
  * custom-model add form. */
 
 import React from '../react'
-import type { ModelEntry, DiscoveredModel, InfoState, StatusMsg, TFunc, CallFn } from '../../shared/types'
+import type { ModelEntry, DiscoveredModel, InfoState, StatusMsg, TFunc, CallFn, ReasoningEfforts } from '../../shared/types'
 import { fmt } from '../labels'
+import { THINKING_LEVELS } from '../../shared/constants'
+import { ReasoningEditor } from './ReasoningEditor'
 
 interface Props {
   t: TFunc
@@ -61,6 +63,22 @@ export function ModelsPanel({
   // Manual custom-model form.
   const [showAdd, setShowAdd] = React.useState(false)
   const [draft, setDraft] = React.useState<AddDraft>(EMPTY_DRAFT)
+  // Which model's thinking-level editor is open (one at a time: the panel is a
+  // detail view, and two open editors could disagree about the same list).
+  const [reasonFor, setReasonFor] = React.useState<string | null>(null)
+  // Catalog preferences, loaded once. `null` = still loading; the editor treats
+  // it as disabled until it arrives, so no fetch can happen before the toggle
+  // has actually been read.
+  const [catalog, setCatalog] = React.useState<{ enabled: boolean; url: string } | null>(null)
+
+  React.useEffect(() => {
+    void (async () => {
+      try {
+        const r = await call('get-catalog-prefs')
+        setCatalog({ enabled: r?.prefs?.enabled === true, url: r?.effectiveUrl || '' })
+      } catch { setCatalog({ enabled: false, url: '' }) }
+    })()
+  }, [call])
 
   const curList = models || []
 
@@ -203,8 +221,33 @@ export function ModelsPanel({
     } catch (e) { fail(e) } finally { setBusy(false) }
   }
 
-  const searchInput = (value: string, onChange: (v: string) => void) => (
-    <input
+  /** Persist one model's reasoning declaration.
+   *
+   * `null` is sent as an explicit null — the host reads that as "clear the
+   * field" (inherit the catalog). Omitting the key would mean "leave it alone",
+   * which merge honours, so the two cannot be collapsed. */
+  const saveReasoning = async (id: string, value: ReasoningEfforts | false | null) => {
+    setBusy(true); setStatus(null)
+    try {
+      await call('apply-models', { route, models: [{ id, reasoningEfforts: value }], mode: 'merge' })
+      setStatus({ kind: 'ok', text: t('reasonSaved') })
+      setReasonFor(null)
+      await refreshModels()
+    } catch (e) { fail(e) } finally { setBusy(false) }
+  }
+
+  /** One-glance summary of what a model declares, for the list column. */
+  const reasonLabel = (m: ModelEntry): string => {
+    const v = m.reasoningEfforts
+    if (v === false) return t('reasonNone')
+    if (v && typeof v === 'object') {
+      const levels = THINKING_LEVELS.filter((l) => Object.prototype.hasOwnProperty.call(v, l))
+      return levels.length ? levels.join(' · ') : t('reasonInherit')
+    }
+    return t('reasonInherit')
+  }
+
+  const searchInput = (value: string, onChange: (v: string) => void) => (    <input
       className="mpro-input mpro-inputMono mpro-searchInput"
       value={value}
       placeholder={t('searchPlaceholder')}
@@ -421,27 +464,56 @@ export function ModelsPanel({
                   <th>{t('idCol')}</th>
                   <th>{t('nameCol')}</th>
                   <th>{t('reqModelField')}</th>
+                  <th>{t('reasonCol')}</th>
                 </tr>
               </thead>
               <tbody>
                 {curVisible.map((m) => (
-                  <tr key={m.id}>
-                    <td className="mpro-tblCk">
-                      <input type="checkbox" checked={!!curSel[m.id]} onChange={() => toggleCurSel(m.id)} />
-                    </td>
-                    <td className="mpro-id">{m.id}</td>
-                    <td>{m.name || m.id}</td>
-                    <td>
-                      <input
-                        title={t('reqModelHint')}
-                        className="mpro-input mpro-inputMono"
-                        style={{ width: 150 }}
-                        value={m.requestModel || ''}
-                        placeholder="—"
-                        onChange={(e) => void setRequestModel(m.id, e.target.value)}
-                      />
-                    </td>
-                  </tr>
+                  <React.Fragment key={m.id}>
+                    <tr>
+                      <td className="mpro-tblCk">
+                        <input type="checkbox" checked={!!curSel[m.id]} onChange={() => toggleCurSel(m.id)} />
+                      </td>
+                      <td className="mpro-id">{m.id}</td>
+                      <td>{m.name || m.id}</td>
+                      <td>
+                        <input
+                          title={t('reqModelHint')}
+                          className="mpro-input mpro-inputMono"
+                          style={{ width: 150 }}
+                          value={m.requestModel || ''}
+                          placeholder="—"
+                          onChange={(e) => void setRequestModel(m.id, e.target.value)}
+                        />
+                      </td>
+                      <td>
+                        <div className="mpro-reasonCell">
+                          <code className="mpro-reasonTag">{reasonLabel(m)}</code>
+                          <button
+                            className="mpro-btn mpro-btnSm"
+                            onClick={() => setReasonFor(reasonFor === m.id ? null : m.id)}
+                          >
+                            {t('reasonEdit')}
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                    {reasonFor === m.id && (
+                      <tr>
+                        <td colSpan={5}>
+                          <ReasoningEditor
+                            t={t}
+                            route={route}
+                            model={m}
+                            catalog={catalog || { enabled: false, url: '' }}
+                            busy={busy}
+                            onSave={(v) => saveReasoning(m.id, v)}
+                            onClose={() => setReasonFor(null)}
+                          />
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
                 ))}
               </tbody>
             </table>

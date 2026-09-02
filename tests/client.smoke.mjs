@@ -139,6 +139,13 @@ const testProviders = [
 // ---------------------------------------------------------------------------
 const uiPrefsState = { showRouteBadge: true }
 const retryPrefsState = { maxRetries: 0 }
+const catalogPrefsState = { enabled: false, url: '' }
+const catalogReply = () => ({
+  ok: true,
+  prefs: { ...catalogPrefsState },
+  effectiveUrl: catalogPrefsState.url || 'https://models.dev/api.json',
+  defaultUrl: 'https://models.dev/api.json',
+})
 const businessFor = (method, payload) => {
   if (method === 'listProviders') return { ok: true, providers: testProviders, protocols: ['openai-completions', 'openai-responses', 'anthropic-messages'], writable: true }
   if (method === 'listRoutes') return { ok: true, routes: { auto: { strategy: 'priority', targets: [{ provider: 'deepseek', model: 'deepseek-chat' }] } } }
@@ -154,6 +161,8 @@ const businessFor = (method, payload) => {
   if (method === 'setUiPrefs') { Object.assign(uiPrefsState, (payload && payload.prefs) || {}); return { ok: true, prefs: { ...uiPrefsState } } }
   if (method === 'getRetryPrefs') return { ok: true, prefs: { ...retryPrefsState }, max: 20 }
   if (method === 'setRetryPrefs') { Object.assign(retryPrefsState, (payload && payload.prefs) || {}); return { ok: true, prefs: { ...retryPrefsState }, applied: true } }
+  if (method === 'getCatalogPrefs') return catalogReply()
+  if (method === 'setCatalogPrefs') { Object.assign(catalogPrefsState, (payload && payload.prefs) || {}); return catalogReply() }
   if (method === 'listRequestLogs') return { ok: true, entries: [{ ts: 1700000000000, sessionId: 'sess-x', route: 'auto', target: { provider: 'deepseek', model: 'deepseek-chat' }, status: 'ok', tryIndex: 1, latencyMs: 400, tokens: { in: 100, out: 200 } }] }
   return { ok: true }
 }
@@ -166,6 +175,7 @@ const remoteMethods = [
   'deleteComposite', 'previewComposite', 'getRouteStats', 'listRequestLogs',
   'clearRequestLogs', 'probeTarget', 'probeAll', 'getUiPrefs', 'setUiPrefs',
   'getRetryPrefs', 'setRetryPrefs',
+  'getCatalogPrefs', 'setCatalogPrefs',
 ]
 const remoteHandle = {}
 for (const m of remoteMethods) {
@@ -261,7 +271,7 @@ const all = out.map((n) => n.className)
 
 // -- structure assertions on the REBUILT bundle --
 const css = structures.join('\n')
-for (const rule of ['.mpro-root', '.mpro-segs', '.mpro-pc', '.mpro-pcActive', '.mpro-pcOff', '.mpro-pill', '.mpro-pillActive', '.mpro-pillOff', '.mpro-verdictOk', '.mpro-discoverBar', '.mpro-step', '.mpro-setupCard', '.mpro-routesTab', '.mpro-statCard', '.mpro-hdotUp', '.mpro-routeRow', '.mpro-targetRow', '.mpro-dragHandle', '.mpro-targetRowOver', '.mpro-moveBtn', '.mpro-retryBox', '.mpro-retrySlider']) {
+for (const rule of ['.mpro-root', '.mpro-segs', '.mpro-pc', '.mpro-pcActive', '.mpro-pcOff', '.mpro-pill', '.mpro-pillActive', '.mpro-pillOff', '.mpro-verdictOk', '.mpro-discoverBar', '.mpro-step', '.mpro-setupCard', '.mpro-routesTab', '.mpro-statCard', '.mpro-hdotUp', '.mpro-routeRow', '.mpro-targetRow', '.mpro-dragHandle', '.mpro-targetRowOver', '.mpro-moveBtn', '.mpro-retryBox', '.mpro-retrySlider', '.mpro-reasonBox', '.mpro-reasonCell', '.mpro-tierExact', '.mpro-checkRow']) {
   assert(css.includes(rule), `styles include ${rule}`)
 }
 
@@ -346,6 +356,17 @@ assert(outR.some((n) => String(n.className).includes('mpro-retryBox')), 'renders
   assert(typeof slider.props.onMouseUp === 'function' && typeof slider.props.onKeyUp === 'function', 'slider commits on release and on keyboard release')
 }
 
+// -- external catalog: opt-in, and its URL field only exists once enabled --
+// The lookup is the plugin's only third-party request, so "off unless asked" is
+// a behavioural guarantee, not a styling detail.
+assert(outR.some((n) => String(n.className).includes('mpro-checkRow')), 'renders the catalog opt-in checkbox')
+{
+  const box = outR.find((n) => n.props && n.props.type === 'checkbox' && n.props.checked === false)
+  assert(box, 'the catalog toggle starts unchecked (no fetch without consent)')
+  const urlInputs = outR.filter((n) => n.props && typeof n.props.placeholder === 'string' && /models\.dev/.test(n.props.placeholder))
+  assert(urlInputs.length === 0, 'the catalog URL field is hidden while the lookup is disabled')
+}
+
 // -- observability tab renders stat cards + request-log table area --
 const obsTab = outR.find((n) => n.tag === 'button' && /tabObservability/i.test(n.text || ''))
 assert(obsTab && typeof obsTab.onClick === 'function', 'observability tab clickable')
@@ -407,6 +428,58 @@ await new Promise((r) => setTimeout(r, 10))
 renderAt(tree, fake, 'root', outA)
 assert(outA.some((n) => String(n.className).includes('mpro-addBar')), 'add-model form panel renders')
 assert(outA.some((n) => n.tag === 'button' && /addModelBtn/i.test(n.text || '')), 'add-model submit button renders')
+
+// -- thinking levels: the list states what each model declares, and the editor
+// -- opens on demand. The declaration cannot be discovered or probed, so showing
+// -- the current value IS the feature, not decoration.
+assert(outA.some((n) => String(n.className).includes('mpro-reasonCell')), 'the model list carries a thinking-level column')
+{
+  // Mocked models declare nothing, so every row must read as "inherit" rather
+  // than implying a capability the settings file never stated.
+  const tags = outA.filter((n) => String(n.className).includes('mpro-reasonTag'))
+  assert(tags.length >= 2, `every model row shows its declaration, got ${tags.length}`)
+  assert(tags.every((n) => /reasonInherit/.test(n.text || '')), 'an undeclared model reads as inherit: ' + JSON.stringify(tags.map((n) => n.text)))
+  assert(!outA.some((n) => String(n.className).includes('mpro-reasonBox')), 'the editor stays closed until asked')
+
+  const setBtn = outA.find((n) => n.tag === 'button' && /reasonEdit/i.test(n.text || ''))
+  assert(setBtn && typeof setBtn.onClick === 'function', 'each row has a thinking-level Set button')
+  setBtn.onClick()
+  const warm = []
+  renderAt(tree, fake, 'root', warm)
+  await new Promise((r) => setTimeout(r, 10))
+  // Collect the settled pass into its OWN array: renderAt appends, so reusing
+  // one array across both passes double-counts every node.
+  const outRe = []
+  renderAt(tree, fake, 'root', outRe)
+  assert(outRe.some((n) => String(n.className).includes('mpro-reasonBox')), 'the thinking-level editor opens')
+  // All three states must be reachable: inherit / does-not-reason / declared
+  // levels are genuinely different, and collapsing any two loses information.
+  const modes = outRe.filter((n) => String(n.className).includes('mpro-pill') && /reasonMode/i.test(n.text || ''))
+  assert(modes.length === 3, `the editor offers inherit / none / levels, got ${modes.length}`)
+
+  // The level table (and the catalog button) belong to the "declare levels"
+  // mode — an undeclared model opens in inherit, where there is nothing to fill.
+  const levelsMode = modes.find((n) => /reasonModeLevels/i.test(n.text || ''))
+  assert(levelsMode && typeof levelsMode.onClick === 'function', 'the declare-levels mode is selectable')
+  levelsMode.onClick()
+  const warm2 = []
+  renderAt(tree, fake, 'root', warm2)
+  await new Promise((r) => setTimeout(r, 10))
+  const outLv = []
+  renderAt(tree, fake, 'root', outLv)
+  // Every pi-ai level must be offerable, or a model that supports one of them
+  // could never be declared.
+  const levelChecks = outLv.filter((n) => n.props && n.props.type === 'checkbox')
+  assert(levelChecks.length >= 7, `all seven thinking levels are listed, got ${levelChecks.length}`)
+  // With the catalog disabled the fetch button must not exist at all.
+  assert(!outLv.some((n) => n.tag === 'button' && /reasonLookup\b/i.test(n.text || '')), 'no catalog button while the lookup is disabled')
+  assert(outLv.some((n) => /reasonLookupOff/i.test(n.text || '')), 'the editor explains that the lookup is off')
+  // Saving must be blocked until the declaration is one llm-pi-ai will accept:
+  // a bad value fails the WHOLE provider section, so a round-trip error is a
+  // worse teacher than a disabled button.
+  const saveBtn = outLv.find((n) => n.tag === 'button' && /^save$/i.test((n.text || '').trim()))
+  assert(saveBtn && saveBtn.props.disabled === true, 'save is blocked while no level is selected')
+}
 
 // -- conversation badge (turnTail): select + render pipeline --
 {

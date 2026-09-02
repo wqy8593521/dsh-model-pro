@@ -208,6 +208,24 @@ export const CSS = [
   '.mpro-previewChips{display:flex;flex-wrap:wrap;gap:6px}',
   '.mpro-toggleCk{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-layer-3);border:1px solid var(--dsw-alias-border-l1);border-radius:8px;padding:7px 10px;cursor:pointer;user-select:none}',
   '.mpro-toggleCk input{accent-color:var(--dsw-alias-brand-primary)}',
+  '.mpro-checkRow{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--dsw-alias-label-secondary);cursor:pointer;user-select:none}',
+  '.mpro-checkRow input{accent-color:var(--dsw-alias-button-primary-fill,var(--dsw-alias-brand-primary))}',
+
+  // Thinking levels (reasoningEfforts) — list cell + per-model editor.
+  '.mpro-reasonCell{display:flex;align-items:center;gap:8px}',
+  '.mpro-reasonTag{font-family:var(--mpro-monospace);font-size:11px;color:var(--dsw-alias-label-tertiary);white-space:nowrap}',
+  '.mpro-reasonBox{display:flex;flex-direction:column;gap:8px;padding:10px 12px;border:1px solid var(--dsw-alias-border-l1);border-radius:10px;background:var(--dsw-alias-bg-layer-2)}',
+  '.mpro-reasonHead{display:flex;align-items:center;gap:8px;font-size:12px}',
+  '.mpro-reasonModes{display:flex;gap:6px;flex-wrap:wrap}',
+  '.mpro-reasonModes .mpro-pill{cursor:pointer;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-secondary)}',
+  '.mpro-reasonLookup{display:flex;align-items:center;gap:10px;flex-wrap:wrap}',
+  '.mpro-reasonCands{display:flex;flex-direction:column;gap:6px}',
+  '.mpro-reasonCand{display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;background:var(--dsw-alias-bg-base)}',
+  '.mpro-tierTag{font-size:10px;font-weight:600;letter-spacing:.02em;padding:2px 7px;border-radius:999px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-tertiary);white-space:nowrap}',
+  '.mpro-tierExact{background:var(--dsw-alias-state-success-fill,rgba(22,163,74,.14));color:var(--dsw-alias-state-success-label,var(--dsw-alias-state-success-primary))}',
+  '.mpro-reasonLevels{font-family:var(--mpro-monospace);font-size:11px;color:var(--dsw-alias-label-primary-foreground,var(--dsw-alias-label-primary))}',
+  '.mpro-reasonFrom{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:220px}',
+  '.mpro-reasonActions{display:flex;gap:8px}',
 
   // stat cards
   '.mpro-statGrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px}',

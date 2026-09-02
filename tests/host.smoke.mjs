@@ -1036,6 +1036,33 @@ assert(r.ok && r.prefs.maxRetries === 20, 'a negative budget is ignored, keeping
 r = await P('set-retry-prefs', { prefs: { maxRetries: 0 } })
 assert(r.ok && r.prefs.maxRetries === 0, 'budget restored to the default')
 
+// --- external model catalog prefs -------------------------------------------
+// The lookup is the plugin's only third-party request, so the default must be
+// off and the stored URL must be something the client can safely hand to fetch.
+r = await P('get-catalog-prefs')
+assert(r.ok && r.prefs.enabled === false, 'catalog lookup is disabled by default: ' + JSON.stringify(r.prefs))
+assert(r.prefs.url === '' && /^https:\/\//.test(r.effectiveUrl), 'an unset URL resolves to the https default: ' + r.effectiveUrl)
+assert(r.effectiveUrl === r.defaultUrl, 'effectiveUrl equals the default when nothing is stored')
+
+r = await P('set-catalog-prefs', { prefs: { enabled: true } })
+assert(r.ok && r.prefs.enabled === true && r.prefs.url === '', 'enabling alone does not disturb the URL')
+r = await P('set-catalog-prefs', { prefs: { url: 'https://mirror.example/api.json' } })
+assert(r.ok && r.prefs.url === 'https://mirror.example/api.json', 'a custom mirror URL is stored')
+assert(r.prefs.enabled === true, 'a URL-only patch keeps the toggle (patch merges over the saved value)')
+assert(r.effectiveUrl === 'https://mirror.example/api.json', 'effectiveUrl follows the override')
+
+// Non-http schemes are refused: the value is handed to the client's fetch, so
+// the place that persists it is the place that decides what is fetchable.
+for (const bad of ['file:///etc/passwd', 'javascript:alert(1)', 'data:application/json,{}', 'not a url']) {
+  const res = await P('set-catalog-prefs', { prefs: { url: bad } })
+  assert(res.ok === true, 'a bad URL does not fail the write: ' + bad)
+  assert(res.prefs.url === 'https://mirror.example/api.json', 'a bad URL leaves the last good value intact: ' + bad + ' -> ' + res.prefs.url)
+}
+r = await P('set-catalog-prefs', { prefs: { url: '' } })
+assert(r.ok && r.prefs.url === '' && r.effectiveUrl === r.defaultUrl, 'clearing the URL falls back to the default')
+r = await P('set-catalog-prefs', { prefs: { enabled: false } })
+assert(r.ok && r.prefs.enabled === false, 'catalog lookup restored to disabled')
+
 // probe-target marks up a healthy target
 r = await P('probe-target', { provider: 'comp-a', model: 'gpt-4o' })
 assert(r.ok && r.latencyMs >= 0, 'probe-target ok: ' + JSON.stringify(r))

@@ -420,6 +420,10 @@ function RouteListPanel({ t, call, providers }: Props) {
             belongs beside the route list rather than inside one route's editor. */}
         <RetryBudget t={t} call={call} />
 
+        {/* The catalog toggle sits here for the same reason: it is a global
+            preference, not a per-route one. */}
+        <CatalogSettings t={t} call={call} />
+
         {msg ? <span className="mpro-inlineStatus" style={{ marginTop: 6, display: 'inline-block' }}>{msg}</span> : null}
       </div>
     </div>
@@ -500,6 +504,86 @@ function RetryBudget({ t, call }: { t: TFunc; call: CallFn }) {
         <span className="mpro-retryValue">{value === '0' ? t('retryOff') : value}</span>
       </div>
       <p className="mpro-hint">{t('retryHint')}</p>
+    </div>
+  )
+}
+
+/* --------------------------------------------------------------------------
+ * External model catalog — the optional reasoning-level prefill source
+ * ------------------------------------------------------------------------ */
+
+/** The catalog lookup is the plugin's ONLY request to a third-party domain, so
+ * it ships disabled and is surfaced as an explicit opt-in rather than buried.
+ *
+ * The fetch itself happens client-side (the Host sandbox withholds the Web
+ * globals a bounded request needs), reads a single static document, sends no
+ * parameters, and carries none of the user's configuration — but that is a claim
+ * the user should be able to check, hence the visible URL. */
+function CatalogSettings({ t, call }: { t: TFunc; call: CallFn }) {
+  const [enabled, setEnabled] = React.useState(false)
+  const [url, setUrl] = React.useState('')
+  const [effective, setEffective] = React.useState('')
+  const [busy, setBusy] = React.useState(false)
+  const [note, setNote] = React.useState('')
+
+  React.useEffect(() => {
+    void (async () => {
+      try {
+        const r = await call('get-catalog-prefs')
+        setEnabled(r?.prefs?.enabled === true)
+        setUrl(r?.prefs?.url || '')
+        setEffective(r?.effectiveUrl || '')
+      } catch { /* stays off — the safe default */ }
+    })()
+  }, [call])
+
+  const save = async (patch: { enabled?: boolean; url?: string }) => {
+    setBusy(true); setNote('')
+    try {
+      const r = await call('set-catalog-prefs', { prefs: patch })
+      setEnabled(r?.prefs?.enabled === true)
+      setUrl(r?.prefs?.url || '')
+      setEffective(r?.effectiveUrl || '')
+      setNote(t('catalogSaved'))
+    } catch (e) {
+      setNote(String((e as Error)?.message || e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="mpro-retryBox">
+      <div className="mpro-retryHead">
+        <span className="mpro-fieldLabel">{t('catalogTitle')}</span>
+        {note ? <span className="mpro-inlineStatus">{note}</span> : null}
+      </div>
+      <label className="mpro-checkRow">
+        <input
+          type="checkbox"
+          checked={enabled}
+          disabled={busy}
+          onChange={(e) => void save({ enabled: e.target.checked })}
+        />
+        <span>{t('catalogEnable')}</span>
+      </label>
+      <p className="mpro-hint">{t('catalogHint')}</p>
+      {enabled && (
+        <>
+          <div className="mpro-field">
+            <span className="mpro-fieldLabel">{t('catalogUrlLabel')}</span>
+            <input
+              className="mpro-input mpro-inputMono"
+              value={url}
+              placeholder={effective}
+              disabled={busy}
+              onChange={(e) => setUrl(e.target.value)}
+              onBlur={() => void save({ url })}
+            />
+          </div>
+          <p className="mpro-hint">{t('catalogUrlHint')} <code>{effective}</code></p>
+        </>
+      )}
     </div>
   )
 }

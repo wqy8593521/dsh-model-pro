@@ -126,3 +126,23 @@ export type ThinkingLevel = (typeof THINKING_LEVELS)[number]
  * "supported, send nothing", which is what not thinking IS on the wire.
  */
 export const REASONING_EFFORTS_FIELD = 'reasoningEfforts'
+
+/** Foreign key (inside the llm-pi-ai settings section) holding the external
+ * model-catalog preferences — whether the models.dev lookup is enabled, and the
+ * URL it reads. */
+export const CATALOG_KEY = 'modelCatalog'
+
+/**
+ * Default source for the optional external model catalog.
+ *
+ * A single static JSON document (~4.4 MB raw, ~430 KB gzipped) keyed
+ * provider -> models -> model, serving `access-control-allow-origin: *` so the
+ * client can read it directly. Overridable so a user can point at a mirror, a
+ * pinned copy, or a LAN cache instead of the public endpoint.
+ */
+export const DEFAULT_CATALOG_URL = 'https://models.dev/api.json'
+
+/** Off by default: the lookup is the plugin's only outbound request to a
+ * third-party domain, so it happens because a user asked for it, never as a
+ * side effect of opening a panel. */
+export const DEFAULT_CATALOG_ENABLED = false

@@ -44,8 +44,20 @@ export interface RetryPrefs {
   maxRetries: number
 }
 
-/** One named smart route: a bundle of targets picked by a strategy. */
-export interface RouteSpec {
+/** External model-catalog preferences.
+ *
+ * The catalog is an OPTIONAL convenience: it prefills reasoning levels that
+ * cannot be probed or discovered, saving hand-entry. It is also the plugin's
+ * only outbound request to a third-party domain, which is why it ships disabled
+ * and carries its own URL rather than hardcoding one. */
+export interface CatalogPrefs {
+  /** Whether the lookup UI appears and may fetch at all (default false). */
+  enabled: boolean
+  /** The catalog document to read. Empty string means "use the built-in default". */
+  url: string
+}
+
+/** One named smart route: a bundle of targets picked by a strategy. */export interface RouteSpec {
   strategy: RouteStrategy
   targets: RouteTarget[]
   config?: RouteConfig
