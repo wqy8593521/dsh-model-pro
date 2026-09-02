@@ -1122,11 +1122,46 @@ assert(r.ok && r.prefs.maxRetries === 0, 'budget restored to the default')
   assert(info.context && info.context.contextWindow === 128000, 'a failed lookup leaves the healthy target\'s metadata intact: ' + JSON.stringify(info.context))
   assert(JSON.stringify((info.reasoning?.efforts || []).map((e) => e.id)) === JSON.stringify(['low', 'high']), 'a failed lookup does not erase reasoning: ' + JSON.stringify(info.reasoning))
 
-  // A route whose every target declares no reasoning must OMIT the field. An
-  // empty efforts array is rejected upstream as INVALID_MODEL_REASONING, which
-  // drops the whole route from every selector.
+  // A route whose every target declares no reasoning must still ADVERTISE the
+  // levels — inertly. This is the live bug `router/free` hit: DSH validates the
+  // requested effort against the VIRTUAL model inside `llm.prepareCall`
+  // (`resolveCallWithInfo`, the `reasoning === undefined` branch) BEFORE the
+  // router is dispatched, so an omitted block makes any requested effort a hard
+  // UNSUPPORTED_REASONING_EFFORT that the per-target clamp below never gets to
+  // prevent. Advertising more than a target serves is recoverable (the clamp
+  // drops it at forward time); advertising nothing is not.
   info = await resolveOver('agg4', { context: { contextWindow: 1000 } }, { context: { contextWindow: 2000 } })
-  assert(!('reasoning' in info), 'no reasoning-capable target => the field is OMITTED, never empty: ' + JSON.stringify(info.reasoning))
+  assert(info.reasoning && Array.isArray(info.reasoning.efforts), 'no reasoning-capable target => the field is still PRESENT (an omitted block fails the request upstream): ' + JSON.stringify(info.reasoning))
+  assert(JSON.stringify(info.reasoning.efforts.map((e) => e.id)) === JSON.stringify(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']), 'the inert block offers every known level: ' + JSON.stringify(info.reasoning.efforts.map((e) => e.id)))
+  assert(info.reasoning.efforts.every((e) => typeof e.description === 'string' && e.description.length > 0), 'each inert level explains that nothing will be sent, so the menu is not silently useless')
+  // No defaultEffort: a default would become the RESOLVED config of requests
+  // that asked for nothing, and mobile clients auto-send a defaultEffort on
+  // selection — spreading a placeholder into persisted state.
+  assert(info.reasoning.defaultEffort === undefined, 'the inert block declares NO defaultEffort: ' + info.reasoning.defaultEffort)
+
+  // The upstream gate, reproduced exactly. This is what actually failed live, so
+  // assert against the real rule rather than the shape that feeds it.
+  const upstreamRejects = (modelInfo, requested) => {
+    const reasoning = modelInfo.reasoning
+    if (reasoning === undefined) return requested !== undefined
+    const effective = requested ?? reasoning.defaultEffort
+    if (effective === undefined) return false
+    return !reasoning.efforts.some((e) => e.id === effective)
+  }
+  for (const level of ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']) {
+    assert(!upstreamRejects(info, level), `a route with no reasoning-capable target still ACCEPTS "${level}" (this is the live router/free + max failure)`)
+  }
+  // Same guarantee for the aggregate that DOES have efforts, and the honest
+  // rejection for a level nothing offers.
+  const agg1Info = await resolveOver('agg4b', { reasoning: eff('low', 'high') }, { reasoning: eff('medium', 'max') })
+  assert(!upstreamRejects(agg1Info, 'medium'), 'a real union accepts a level only one target offers')
+  assert(upstreamRejects(agg1Info, 'xhigh'), 'a real union still rejects a level NO target offers (the union is not widened silently)')
+
+  // A route that does not exist, and one whose every target is disabled, are
+  // real problems with their own diagnostics — but they must fail on THAT, not
+  // on the effort, or the message blames a modifier instead of the route.
+  const missing = await rgw.adapter.resolveModel('router', 'no-such-route')
+  assert(!upstreamRejects(missing, 'max'), 'an unknown route still accepts an effort, so its own error is what surfaces: ' + JSON.stringify(missing.reasoning))
 
   // defaultEffort is only carried when every reasoning-capable target agrees;
   // otherwise a request that asked for nothing would silently get one target's
@@ -1209,6 +1244,62 @@ assert(r.ok && r.prefs.maxRetries === 0, 'budget restored to the default')
   await P('delete-route', { alias: 'cap' })
   await P('delete-provider', { route: 'cap-a' })
   await P('delete-provider', { route: 'cap-b' })
+}
+
+// --- local pi-ai catalog suggestion: must DEGRADE, never throw ---------------
+// The suggestion reads files, and a Host half is not guaranteed to be allowed
+// to: this very sandbox evaluates the bundle as a classic script with no
+// dynamic-import loader, so `await import('node:fs')` fails outright. That is
+// the realistic worst case, and the contract is that it turns into a reported
+// reason rather than an exception — a thrown RPC would surface in the panel as a
+// generic failure and make the models tab look broken.
+{
+  await P('create-provider', { route: 'pic-gw', baseURL: 'https://pic/v1', api: 'openai-completions' })
+  await P('apply-models', { route: 'pic-gw', models: [{ id: 'claude-opus-5' }], mode: 'merge' })
+  let res = await P('suggest-reasoning', { route: 'pic-gw' })
+  assert(typeof res.ok === 'boolean', 'suggest-reasoning always answers with an envelope, never throws: ' + JSON.stringify(res))
+  const available = res.ok
+  if (!available) {
+    assert(typeof res.error === 'string' && res.error.length > 0, 'an unavailable catalog reports WHY: ' + JSON.stringify(res))
+  } else {
+    assert(Array.isArray(res.rows) && res.rows.length === 1, 'one row per requested model: ' + JSON.stringify(res.rows))
+    assert(res.rows[0].provider === 'pic-gw' && res.rows[0].api === 'openai-completions', 'a row names its provider and the protocol that shaped it: ' + JSON.stringify(res.rows[0]))
+    assert(res.rows[0].current === null, 'an undeclared model reports current=null (inherit): ' + JSON.stringify(res.rows[0].current))
+  }
+
+  // Route scope: an explicit target list, spanning providers, deduplicated.
+  await P('create-provider', { route: 'pic-gw2', baseURL: 'https://pic2/v1', api: 'openai-responses' })
+  await P('apply-models', { route: 'pic-gw2', models: [{ id: 'claude-opus-5' }], mode: 'merge' })
+  res = await P('suggest-reasoning', {
+    targets: [
+      { provider: 'pic-gw', model: 'claude-opus-5' },
+      { provider: 'pic-gw', model: 'claude-opus-5' },
+      { provider: 'pic-gw2', model: 'claude-opus-5' },
+    ],
+  })
+  if (available) {
+    assert(res.ok && res.rows.length === 2, 'a repeated target yields ONE row per provider/model pair: ' + JSON.stringify(res.rows?.map((x) => x.provider + '/' + x.id)))
+    assert(res.rows[0].api === 'openai-completions' && res.rows[1].api === 'openai-responses', 'each row carries ITS OWN provider protocol: ' + JSON.stringify(res.rows.map((x) => x.api)))
+  }
+  // An unknown provider inside a target list is reported, not fatal, as long as
+  // something else resolved — a route may reference a provider since deleted.
+  res = await P('suggest-reasoning', {
+    targets: [{ provider: 'pic-gw', model: 'claude-opus-5' }, { provider: 'ghost-gw', model: 'x' }],
+  })
+  if (available) {
+    assert(res.ok && res.rows.length === 1, 'a partially valid target list still answers: ' + JSON.stringify(res))
+    assert(Array.isArray(res.unknown) && res.unknown.includes('ghost-gw'), 'the unresolvable provider is named: ' + JSON.stringify(res.unknown))
+  }
+
+  // Bad input is rejected on its own terms, whether or not the catalog loaded.
+  res = await P('suggest-reasoning', {})
+  assert(!res.ok && /route|targets/.test(res.error), 'neither route nor targets is its own error: ' + JSON.stringify(res))
+  res = await P('suggest-reasoning', { route: 'no-such-provider' })
+  assert(!res.ok, 'an unknown provider is rejected: ' + JSON.stringify(res))
+  res = await P('suggest-reasoning', { targets: [{ provider: '', model: '' }] })
+  assert(!res.ok, 'an empty target list is rejected: ' + JSON.stringify(res))
+  await P('delete-provider', { route: 'pic-gw' })
+  await P('delete-provider', { route: 'pic-gw2' })
 }
 
 // --- external model catalog prefs -------------------------------------------

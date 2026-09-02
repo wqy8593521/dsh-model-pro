@@ -86,6 +86,10 @@ export const CSS = [
   '.mpro-inputMono{font-family:var(--mpro-monospace);font-size:12px}',
   '.mpro-select{appearance:auto;cursor:pointer}',
   '.mpro-inlineErr{font-size:11px;color:var(--dsw-alias-state-error-primary)}',
+  // Inline failure text for a lookup or a write that did not happen. Same metrics
+  // as .mpro-hint (these sit in the same paragraph stack) but in the error colour,
+  // so a failed prefill does not read as ordinary explanatory copy.
+  '.mpro-verdictErr{font-size:11px;line-height:1.5;margin:0;color:var(--dsw-alias-state-error-primary)}',
   '.mpro-formFooter{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding-top:4px}',
   '.mpro-grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}',
   '.mpro-grid2 .mpro-fieldFull{grid-column:1/-1}',
@@ -226,6 +230,12 @@ export const CSS = [
   '.mpro-reasonLevels{font-family:var(--mpro-monospace);font-size:11px;color:var(--dsw-alias-label-primary-foreground,var(--dsw-alias-label-primary))}',
   '.mpro-reasonFrom{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:220px}',
   '.mpro-reasonActions{display:flex;gap:8px}',
+  // Alternate-candidate switcher inside the bulk-fill preview: one pill per
+  // competing declaration, labelled with its level count (the ids that differ
+  // between deployments are exactly the ones worth a second look).
+  '.mpro-reasonAlt{display:inline-flex;gap:4px;margin-left:8px;vertical-align:middle}',
+  '.mpro-pillSm{cursor:pointer;padding:1px 7px;font-size:10px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-secondary)}',
+  '.mpro-pillSm::before{display:none}',
 
   // stat cards
   '.mpro-statGrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px}',

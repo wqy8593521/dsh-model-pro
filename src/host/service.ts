@@ -35,6 +35,7 @@ import {
 import { getUiPrefs, setUiPrefs } from './handlers/uiPrefs'
 import { getRetryPrefs, setRetryPrefs } from './handlers/retryPrefs'
 import { getCatalogPrefs, setCatalogPrefs } from './handlers/catalogPrefs'
+import { suggestReasoning } from './handlers/suggestReasoning'
 
 export class ModelProRuntime extends (TypertRemoteService as any) {
   ctx: HostCtx
@@ -130,5 +131,8 @@ export class ModelProRuntime extends (TypertRemoteService as any) {
   }
   async setCatalogPrefs(args: any) {
     return setCatalogPrefs(this.ctx, args || {})
+  }
+  async suggestReasoning(args: any) {
+    return suggestReasoning(this.ctx, args || {})
   }
 }

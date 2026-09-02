@@ -10,6 +10,9 @@
  *   - `reasoning.efforts` — UNION. An effort offered by any target is reachable,
  *     because the forwarding clamp below maps it onto whatever the chosen target
  *     accepts. Intersecting would hide levels the route can genuinely serve.
+ *     When the union comes out EMPTY the field is filled with the inert set
+ *     below rather than omitted — see `inertEfforts` for why omitting it is a
+ *     hard failure rather than a missing control.
  *   - `context.contextWindow` / `defaultMaxTokens` — MINIMUM. These drive
  *     overflow checks upstream. Advertising the largest would let a request pass
  *     validation and then fail at forward time on a smaller target, which is the
@@ -129,6 +132,42 @@ function orderEfforts(efforts: EffortInfo[]): EffortInfo[] {
 }
 
 /**
+ * The `reasoning` block a route reports when NO target declares any effort.
+ *
+ * Omitting the field is the honest description of the capability, and it is
+ * exactly what breaks: DSH validates a request against the VIRTUAL model before
+ * the router is ever consulted (`resolveCallWithInfo`, the `reasoning ===
+ * undefined` branch), so an absent block turns any requested effort into a hard
+ * `UNSUPPORTED_REASONING_EFFORT` — thrown for provider `router`, before dispatch,
+ * where the per-target clamp below cannot intervene. The user sees a whole turn
+ * fail over an optional modifier, and the failure is not even attributable: the
+ * effort may come from a saved default, an inherited session header, or a mobile
+ * client that auto-sends a target's `defaultEffort`.
+ *
+ * The asymmetry is worth stating plainly, because it is what forces this choice.
+ * A route that advertises MORE than a target can serve is recoverable —
+ * `effortForTarget` clamps it away at forward time. A route that advertises
+ * NOTHING is unrecoverable: the request dies upstream.
+ *
+ * So the levels are advertised as accepted and each one's `description` says
+ * what will actually happen — no target declares thinking levels, so nothing is
+ * sent. That is not a lie about capability: the route genuinely accepts the
+ * request and serves it, and the selector shows the reason rather than an
+ * unexplained empty menu. Declaring a `defaultEffort` here is deliberately
+ * avoided — a default would make the inert value the resolved config of requests
+ * that asked for nothing, and mobile clients auto-send a `defaultEffort` on
+ * selection, spreading a placeholder into persisted state.
+ */
+const INERT_NOTE = '目标未声明思考档位，该档位不会下发'
+
+const inertEfforts = (): EffortInfo[] =>
+  THINKING_LEVELS.map((id) => ({
+    id,
+    name: `${id.charAt(0).toUpperCase()}${id.slice(1)}`,
+    description: INERT_NOTE,
+  }))
+
+/**
  * Aggregate every eligible target's metadata into one virtual model info.
  *
  * `provider`/`id`/`name` are always the VIRTUAL identity: `normalizeModelInfo`
@@ -139,6 +178,12 @@ function orderEfforts(efforts: EffortInfo[]): EffortInfo[] {
  * Unlike the pre-split rule this no longer discards everything when a lookup
  * fails — each field is aggregated over the targets that DID answer, so one dead
  * target degrades the numbers instead of erasing the route's capability.
+ *
+ * Every early return carries the inert `reasoning` block too. A missing route, a
+ * fully disabled one, and a route whose every lookup failed are all real
+ * problems, and each has its own diagnostic — but with no `reasoning` block the
+ * FIRST thing to fail is the requested effort, so the message the user reads
+ * blames a modifier instead of naming the route problem.
  */
 export async function aggregateRouteInfo(
   ctx: HostCtx,
@@ -148,13 +193,18 @@ export async function aggregateRouteInfo(
   model: string,
   signal?: AbortSignal,
 ): Promise<Record<string, unknown>> {
-  const base: Record<string, unknown> = { provider, id: model, name: model }
-  if (!spec || !llm) return base
+  const base = (): Record<string, unknown> => ({
+    provider,
+    id: model,
+    name: model,
+    reasoning: { efforts: inertEfforts() },
+  })
+  if (!spec || !llm) return base()
   const targets = eligible(spec)
-  if (!targets.length) return base
+  if (!targets.length) return base()
 
   const infos = (await Promise.all(targets.map((t) => targetInfo(ctx, llm, t, signal)))).filter(Boolean) as TargetInfo[]
-  if (!infos.length) return base
+  if (!infos.length) return base()
 
   let minContext: number | undefined
   let minMaxTokens: number | undefined
@@ -199,14 +249,12 @@ export async function aggregateRouteInfo(
     }
   }
 
-  const out: Record<string, unknown> = { ...base }
+  const out: Record<string, unknown> = { ...base() }
   if (minContext !== undefined) out.context = { contextWindow: minContext }
   if (minMaxTokens !== undefined) out.defaultMaxTokens = minMaxTokens
   if (everyTargetDeclaredModalities && modalities !== undefined) out.inputModalities = modalities
 
   if (efforts.size) {
-    // An empty `efforts` array is rejected upstream (INVALID_MODEL_REASONING),
-    // so `reasoning` is omitted entirely rather than emitted empty.
     const reasoning: Record<string, unknown> = { efforts: orderEfforts([...efforts.values()]) }
     // A default is only carried when EVERY reasoning-capable target agrees on
     // it. Picking one target's default for a route served by several would
@@ -216,6 +264,11 @@ export async function aggregateRouteInfo(
       if (efforts.has(only)) reasoning.defaultEffort = only
     }
     out.reasoning = reasoning
+  } else {
+    // No target declares a level. Accept every level inertly instead of
+    // omitting the block — see `inertEfforts` for why omission is a hard
+    // request failure rather than a missing control.
+    out.reasoning = { efforts: inertEfforts() }
   }
   return out
 }

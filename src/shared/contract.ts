@@ -55,6 +55,7 @@ export const METHODS: ReadonlyArray<readonly [string, string]> = [
   ['set-retry-prefs', 'setRetryPrefs'],
   ['get-catalog-prefs', 'getCatalogPrefs'],
   ['set-catalog-prefs', 'setCatalogPrefs'],
+  ['suggest-reasoning', 'suggestReasoning'],
 ] as const
 
 /** Client-facade kebab → camel map. */

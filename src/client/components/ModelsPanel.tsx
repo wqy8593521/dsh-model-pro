@@ -8,6 +8,7 @@ import type { ModelEntry, DiscoveredModel, InfoState, StatusMsg, TFunc, CallFn, 
 import { fmt } from '../labels'
 import { THINKING_LEVELS } from '../../shared/constants'
 import { ReasoningEditor } from './ReasoningEditor'
+import { LocalFillPanel } from './LocalFillPanel'
 
 interface Props {
   t: TFunc
@@ -66,6 +67,8 @@ export function ModelsPanel({
   // Which model's thinking-level editor is open (one at a time: the panel is a
   // detail view, and two open editors could disagree about the same list).
   const [reasonFor, setReasonFor] = React.useState<string | null>(null)
+  // Whether the bulk local-catalog fill panel is open.
+  const [fillOpen, setFillOpen] = React.useState(false)
   // Catalog preferences, loaded once. `null` = still loading; the editor treats
   // it as disabled until it arrives, so no fetch can happen before the toggle
   // has actually been read.
@@ -445,12 +448,30 @@ export function ModelsPanel({
               {t('saveMappings')}
             </button>
           )}
+          {curList.length > 0 && (
+            <button className="mpro-btn mpro-btnSm" disabled={busy} onClick={() => setFillOpen((v) => !v)}>
+              {t('reasonLocalFill')}
+            </button>
+          )}
           {curSelectedCount > 0 && (
             <button className="mpro-btn mpro-btnSm mpro-btnDanger" disabled={busy} onClick={() => void removeSelected()}>
               {t('removeSelected')} ({curSelectedCount})
             </button>
           )}
         </div>
+        {fillOpen && (
+          <LocalFillPanel
+            t={t}
+            call={call}
+            scope={{ kind: 'provider', route }}
+            busy={busy}
+            setBusy={setBusy}
+            fail={fail}
+            setStatus={setStatus}
+            onDone={async () => { await refreshModels() }}
+            onClose={() => setFillOpen(false)}
+          />
+        )}
         {!curList.length ? (
           <div className="mpro-emptyState">{t('emptyModels')}</div>
         ) : curVisible.length === 0 ? (
@@ -503,6 +524,7 @@ export function ModelsPanel({
                         <td colSpan={5}>
                           <ReasoningEditor
                             t={t}
+                            call={call}
                             route={route}
                             model={m}
                             catalog={catalog || { enabled: false, url: '' }}

@@ -13,7 +13,7 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "node tests/host.smoke.mjs && node tests/client.smoke.mjs",
+    "test": "node tests/host.smoke.mjs && node tests/client.smoke.mjs && node tests/picatalog.mjs && node tests/i18n.mjs",
     "run:host": "node scripts/run-host.mjs",
     "install:local": "node scripts/install-local.mjs",
     "prepare": "test -f src/host/index.ts && npm run build || true",

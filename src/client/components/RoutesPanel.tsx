@@ -12,6 +12,7 @@
 
 import React from '../react'
 import type { ProviderListItem, RouteSpec, RouteTarget, TFunc, CallFn, TargetHealth } from '../../shared/types'
+import { LocalFillPanel } from './LocalFillPanel'
 
 interface Props {
   t: TFunc
@@ -90,6 +91,14 @@ function RouteListPanel({ t, call, providers }: Props) {
   /** Row index being dragged, and the row currently hovered as a drop target. */
   const [dragFrom, setDragFrom] = React.useState<number | null>(null)
   const [dragOver, setDragOver] = React.useState<number | null>(null)
+  /** Which route's bulk thinking-level fill is open.
+   *
+   * This lives on the ROUTE list rather than only in the 模型 tab because an
+   * empty union is a route-level symptom: `router/<route>` advertises no
+   * thinking levels exactly when none of its targets declare any, and those
+   * targets usually sit on several different gateway providers. Fixing it from
+   * here means one pass over the targets that actually compose the route. */
+  const [fillFor, setFillFor] = React.useState<string | null>(null)
 
   const refresh = React.useCallback(async () => {
     try {
@@ -230,29 +239,53 @@ function RouteListPanel({ t, call, providers }: Props) {
         {entries.length ? (
           <div>
             {entries.map(([n, spec]) => (
-              <div key={n} className="mpro-routeRow">
-                <div className="mpro-routeMain">
-                  <div className="mpro-routeNameRow">
-                    <span className="mpro-routeName">{n}</span>
-                    <span className="mpro-chip mpro-chipMono">{strategyLabel(t, spec.strategy)}</span>
-                    {spec.config?.healthAware === false ? <span className="mpro-chip mpro-chipMiss">{t('routeCfgHealthAware')} ×</span> : null}
+              <React.Fragment key={n}>
+                <div className="mpro-routeRow">
+                  <div className="mpro-routeMain">
+                    <div className="mpro-routeNameRow">
+                      <span className="mpro-routeName">{n}</span>
+                      <span className="mpro-chip mpro-chipMono">{strategyLabel(t, spec.strategy)}</span>
+                      {spec.config?.healthAware === false ? <span className="mpro-chip mpro-chipMiss">{t('routeCfgHealthAware')} ×</span> : null}
+                    </div>
+                    <span className="mpro-routeChain">
+                      {spec.targets.map((x, i) => (
+                        <span key={i}>
+                          {i > 0 ? ' → ' : ''}
+                          {x.provider}/{x.model}
+                          {typeof x.weight === 'number' && x.weight > 0 ? <span className="mpro-routeW"> ·{x.weight}</span> : null}
+                          {x.enabled === false ? <span className="mpro-routeW"> ·⛔</span> : null}
+                        </span>
+                      ))}
+                    </span>
                   </div>
-                  <span className="mpro-routeChain">
-                    {spec.targets.map((x, i) => (
-                      <span key={i}>
-                        {i > 0 ? ' → ' : ''}
-                        {x.provider}/{x.model}
-                        {typeof x.weight === 'number' && x.weight > 0 ? <span className="mpro-routeW"> ·{x.weight}</span> : null}
-                        {x.enabled === false ? <span className="mpro-routeW"> ·⛔</span> : null}
-                      </span>
-                    ))}
-                  </span>
+                  <div className="mpro-routeActions">
+                    <button
+                      className="mpro-btn mpro-btnSm"
+                      title={t('reasonLocalFillRouteHint')}
+                      onClick={() => setFillFor(fillFor === n ? null : n)}
+                    >
+                      {t('reasonLocalFill')}
+                    </button>
+                    <button className="mpro-btn mpro-btnSm" onClick={() => startEdit(n)}>{t('edit')}</button>
+                    <button className="mpro-btn mpro-btnSm mpro-btnDanger" onClick={() => void remove(n)}>{t('routeDelete')}</button>
+                  </div>
                 </div>
-                <div className="mpro-routeActions">
-                  <button className="mpro-btn mpro-btnSm" onClick={() => startEdit(n)}>{t('edit')}</button>
-                  <button className="mpro-btn mpro-btnSm mpro-btnDanger" onClick={() => void remove(n)}>{t('routeDelete')}</button>
-                </div>
-              </div>
+                {fillFor === n && (
+                  <div style={{ margin: '0 0 10px' }}>
+                    <LocalFillPanel
+                      t={t}
+                      call={call}
+                      scope={{ kind: 'route', name: n, targets: spec.targets.map((x) => ({ provider: x.provider, model: x.model })) }}
+                      busy={busy}
+                      setBusy={setBusy}
+                      fail={(e) => setMsg(String((e as Error)?.message || e))}
+                      setStatus={(s) => setMsg(s.text)}
+                      onDone={async () => { await refresh() }}
+                      onClose={() => setFillFor(null)}
+                    />
+                  </div>
+                )}
+              </React.Fragment>
             ))}
           </div>
         ) : (
