@@ -1,5 +1,7 @@
 /** Shared types used by both host and client halves. */
 
+import type { ThinkingLevel } from './constants'
+
 /** A resolver alias whose real model lives on "provider route / model id". */
 export interface RouteTarget {
   provider: string
@@ -133,6 +135,15 @@ export interface ProviderProfile {
   [key: string]: unknown
 }
 
+/** Per-level wire spellings for one model's reasoning efforts.
+ *
+ * `null` is only legal on `off`, where it means "this level is supported, and
+ * dispatch sends nothing" — the wire form of not thinking. Every other level
+ * needs the exact string the provider expects (often the level name, but some
+ * gateways want a token budget or a vendor-specific spelling), which is why this
+ * cannot be derived from the level list alone. */
+export type ReasoningEfforts = Partial<Record<ThinkingLevel, string | null>>
+
 /** A model entry in a provider's models array. `requestModel`, when set, is the
  * real model id forwarded to the provider (the wire id differs from the
  * selectable `id` — see the llm/stream rewrite in the host half). */
@@ -143,6 +154,9 @@ export interface ModelEntry {
   maxTokens?: number
   /** Optional wire model id different from `id`. */
   requestModel?: string
+  /** Reasoning capability: absent = inherit the catalog, `false` = does not
+   * reason, dict = the offered levels and their wire spellings. */
+  reasoningEfforts?: false | ReasoningEfforts
   [key: string]: unknown
 }
 

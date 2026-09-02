@@ -708,6 +708,81 @@ streamListeners[0]({ provider: 'router', model: 'auto', messages: [] }, (opts) =
 assert(forwarded.model === 'auto', 'router calls bypass the rewrite')
 await P('delete-provider', { route: 'map-gw' })
 
+// --- reasoningEfforts: validated on the way in, never silently dropped -------
+// The field is hand-authored only (no listing endpoint reports a model's
+// reasoning protocol), so losing it means losing information the user typed.
+await P('create-provider', { route: 'reason-gw', baseURL: 'https://reason/v1' })
+const entryOf = (route, id) => {
+  const list = (provs()[route] || {}).models
+  return (Array.isArray(list) ? list : []).find((m) => m && m.id === id)
+}
+
+r = await P('apply-models', {
+  route: 'reason-gw',
+  models: [{ id: 'r1', reasoningEfforts: { off: null, low: 'low', high: 'high' } }],
+  mode: 'replace',
+})
+assert(r.ok === true, 'a valid reasoningEfforts dict is accepted: ' + JSON.stringify(r))
+let re = entryOf('reason-gw', 'r1').reasoningEfforts
+assert(re && re.low === 'low' && re.high === 'high', 'reasoningEfforts persisted: ' + JSON.stringify(re))
+assert(re.off === null, 'off keeps its null (supported, send nothing)')
+assert(JSON.stringify(Object.keys(re)) === JSON.stringify(['off', 'low', 'high']), 'levels persist in canonical ascending order: ' + JSON.stringify(Object.keys(re)))
+
+// `false` is a real value meaning "does not reason", distinct from absence.
+r = await P('apply-models', { route: 'reason-gw', models: [{ id: 'r2', reasoningEfforts: false }], mode: 'merge' })
+assert(r.ok === true && entryOf('reason-gw', 'r2').reasoningEfforts === false, 'reasoningEfforts:false persists as false')
+
+// The rejections below all mirror llm-pi-ai's own config schema, which fails the
+// WHOLE provider section on a bad value — so accepting one would take every
+// model of this provider offline, not just the bad entry.
+const rejects = [
+  [{ id: 'r3', reasoningEfforts: {} }, 'an empty dict is rejected'],
+  [{ id: 'r3', reasoningEfforts: { off: null } }, 'a dict offering only off is rejected'],
+  [{ id: 'r3', reasoningEfforts: { low: '' } }, 'an empty wire value is rejected'],
+  [{ id: 'r3', reasoningEfforts: { high: null } }, 'a null on a non-off level is rejected'],
+  [{ id: 'r3', reasoningEfforts: { ultra: 'x' } }, 'an unknown level name is rejected'],
+  [{ id: 'r3', reasoningEfforts: true }, 'a bare true is rejected (wire spellings cannot be inferred)'],
+  [{ id: 'r3', reasoningEfforts: ['low'] }, 'an array is rejected'],
+]
+for (const [entry, why] of rejects) {
+  const res = await P('apply-models', { route: 'reason-gw', models: [entry], mode: 'merge' })
+  assert(res.ok === false && /r3/.test(res.error || ''), why + ': ' + JSON.stringify(res))
+  assert(!entryOf('reason-gw', 'r3'), why + ' — and nothing was written')
+}
+
+// A rejected call must not partially apply: r1 is valid but shares the call.
+r = await P('apply-models', {
+  route: 'reason-gw',
+  models: [{ id: 'r1', reasoningEfforts: { off: null, medium: 'medium' } }, { id: 'bad', reasoningEfforts: {} }],
+  mode: 'merge',
+})
+assert(r.ok === false, 'one bad entry rejects the whole call')
+re = entryOf('reason-gw', 'r1').reasoningEfforts
+assert(re.high === 'high' && re.medium === undefined, 'the valid sibling entry was NOT written: ' + JSON.stringify(re))
+
+// Discovery returns id/name/context/maxTokens only. A discover-then-replace
+// cycle used to wipe hand-authored fields; they must now survive.
+r = await P('apply-models', {
+  route: 'reason-gw',
+  models: [{ id: 'r1', name: 'R One', contextWindow: 128000 }],
+  mode: 'replace',
+})
+const keptEntry = entryOf('reason-gw', 'r1')
+assert(r.ok === true && keptEntry.reasoningEfforts && keptEntry.reasoningEfforts.high === 'high', 'replace preserves reasoningEfforts a discovery payload omits: ' + JSON.stringify(keptEntry))
+assert(keptEntry.contextWindow === 128000, 'replace still applies the discovered fields')
+
+// requestModel is hand-authored the same way, and was equally exposed.
+await P('apply-models', { route: 'reason-gw', models: [{ id: 'r4', requestModel: 'wire-4' }], mode: 'merge' })
+await P('apply-models', { route: 'reason-gw', models: [{ id: 'r4', name: 'R Four' }], mode: 'replace' })
+assert(entryOf('reason-gw', 'r4').requestModel === 'wire-4', 'replace preserves requestModel too')
+
+// An explicit null CLEARS the field — otherwise "stop overriding the catalog"
+// would be unreachable, since merge preserves whatever it does not mention.
+r = await P('apply-models', { route: 'reason-gw', models: [{ id: 'r1', reasoningEfforts: null }], mode: 'merge' })
+assert(r.ok === true, 'an explicit null is accepted')
+assert(!('reasoningEfforts' in entryOf('reason-gw', 'r1')), 'null clears the field rather than resurrecting the saved value: ' + JSON.stringify(entryOf('reason-gw', 'r1')))
+await P('delete-provider', { route: 'reason-gw' })
+
 // deleting a route must work even when the resolved section object is frozen
 // (regression: readRoutes used to return the frozen settings object, so
 // `delete routes['0']` threw "Cannot delete property of [object Object]")

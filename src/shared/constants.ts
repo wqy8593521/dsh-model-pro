@@ -99,3 +99,30 @@ export const DEFAULT_ROUTER_MAX_RETRIES = 0
  * but a routed retry re-runs the ENTIRE target sweep, so a large budget
  * multiplies wall-clock time by the number of targets. */
 export const MAX_ROUTER_MAX_RETRIES = 20
+
+/**
+ * Reasoning levels pi-ai recognizes, in ascending order of effort.
+ *
+ * The order is load-bearing, not decorative: it is what "the nearest lower
+ * level" means when a requested effort has to be clamped for a target that does
+ * not offer it. Mirrors pi-ai's own `EXTENDED_THINKING_LEVELS`.
+ */
+export const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
+export type ThinkingLevel = (typeof THINKING_LEVELS)[number]
+
+/**
+ * The model-entry field holding per-level wire spellings, consumed by
+ * `@deepseek-ai/dsh-llm-pi-ai` and translated into pi-ai's `thinkingLevelMap`.
+ *
+ * Three states, all distinct and none interchangeable:
+ *   - absent  : inherit whatever the installed catalog entry declares
+ *   - `false` : this model does not reason
+ *   - a dict  : the offered levels, each mapped to the value dispatch sends
+ *
+ * Within the dict, pi-ai's defaulting is asymmetric — an absent key means
+ * "supported" for the five base levels but "unsupported" for `xhigh`/`max` — so
+ * llm-pi-ai pins every undeclared level to `null` when materializing the map.
+ * A declared `off` with an empty value is the one legal null: it means
+ * "supported, send nothing", which is what not thinking IS on the wire.
+ */
+export const REASONING_EFFORTS_FIELD = 'reasoningEfforts'
