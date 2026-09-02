@@ -77,10 +77,19 @@ function createLlm(log = []) {
   // Per-provider scripted streams — mimic the REAL pi-ai adapter, which never
   // throws for an unreachable provider: it yields [usage] then finish(error).
   const scriptedStreams = new Map()
+  // Per-target model metadata, keyed `provider\0model`. Lets a test give two
+  // targets DIFFERENT reasoning efforts / context windows so the router's
+  // aggregation and clamping have something real to combine.
+  const modelInfo = new Map()
+  // Every reasoningEffort the mock was asked to forward, in order, so a test can
+  // assert what a target actually received after clamping.
+  const effortsSeen = []
   return {
     registrations,
     failProviders,
     scriptedStreams,
+    modelInfo,
+    effortsSeen,
     listConfigurableProviders: () => catalog,
     discoverModels: async (ns, request) => {
       if (request.api === 'anthropic-messages') return []
@@ -101,11 +110,28 @@ function createLlm(log = []) {
         if (i >= 0) registrations.splice(i, 1)
       }
     },
-    resolveModelInfo: async (provider, model) =>
-      ({ provider, id: model, name: model, context: { contextWindow: 200000 } }),
+    resolveModelInfo: async (provider, model) => {
+      const override = modelInfo.get(`${provider}\u0000${model}`)
+      if (override === 'throw') throw new Error(`mock: no metadata for ${provider}/${model}`)
+      if (override) return { provider, id: model, name: model, ...override }
+      return { provider, id: model, name: model, context: { contextWindow: 200000 } }
+    },
     prepareCall: async (config, signal) => {
       if (failProviders.has(config.provider)) throw new Error(`mock provider ${config.provider} is down`)
       log.lastConfig = config
+      effortsSeen.push({ provider: config.provider, model: config.model, effort: config.reasoningEffort })
+      // Mirror the real runtime: an effort the target does not offer is rejected
+      // BEFORE any provider I/O, which is exactly what the router's clamp exists
+      // to avoid triggering.
+      const info = modelInfo.get(`${config.provider}\u0000${config.model}`)
+      const offered = info && info !== 'throw' && info.reasoning
+        ? info.reasoning.efforts.map((e) => e.id)
+        : []
+      if (config.reasoningEffort !== undefined && !offered.includes(config.reasoningEffort)) {
+        const err = new Error(`provider "${config.provider}" model "${config.model}" does not support reasoning effort "${config.reasoningEffort}"`)
+        err.code = 'UNSUPPORTED_REASONING_EFFORT'
+        throw err
+      }
       const scripted = scriptedStreams.get(config.provider)
       // Mirror the real llm runtime: prepareCall exposes the RESOLVED config,
       // and stream() must be dispatched with a config that matches it on the
@@ -454,7 +480,7 @@ assert(rreg && rreg.adapter, 'router adapter registered for route [router]')
 const rm = await rreg.adapter.listModels('router')
 assert(Array.isArray(rm) && rm.some((m) => m.id === 'auto'), 'router lists named routes as models')
 const rinfo = await rreg.adapter.resolveModel('router', 'auto')
-assert(rinfo && rinfo.id === 'auto' && rinfo.context && rinfo.context.contextWindow === 200000, 'router resolves route to first target metadata')
+assert(rinfo && rinfo.id === 'auto' && rinfo.context && rinfo.context.contextWindow === 200000, 'router resolves route to aggregated target metadata')
 
 // --- adapter.prepareCall: the contract dsh-llm >= 0.1.1-rc.2 dispatches through.
 // That runtime calls `registration.adapter.prepareCall(provider, model, signal)`
@@ -1035,6 +1061,155 @@ assert(r.ok && r.prefs.maxRetries === 20, 'a negative budget is ignored, keeping
 }
 r = await P('set-retry-prefs', { prefs: { maxRetries: 0 } })
 assert(r.ok && r.prefs.maxRetries === 0, 'budget restored to the default')
+
+// --- route capability aggregation + per-target effort clamp ------------------
+// A route is not a model: whichever target serves the call decides what the call
+// can do. Advertising one target's capability for all of them is what makes a
+// routed request fail at forward time on a different target.
+//
+// Each scenario below uses FRESH model ids. Target metadata is memoized for 30s
+// keyed by the real provider/model pair (one selector render fans out across
+// every target of every route), so reusing an id would assert against the
+// previous scenario's cached answer.
+{
+  const rgw = llm.registrations.find((x) => x.providers.includes('router'))
+  const KEY = (p, m) => `${p}\u0000${m}`
+  const eff = (...ids) => ({ efforts: ids.map((id) => ({ id, name: id })) })
+  await P('create-provider', { route: 'cap-a', baseURL: 'https://a/v1' })
+  await P('create-provider', { route: 'cap-b', baseURL: 'https://b/v1' })
+
+  /** Declare one model on both providers, wire a route over them, resolve it. */
+  const resolveOver = async (id, aInfo, bInfo, targetOpts = {}) => {
+    await P('apply-models', { route: 'cap-a', models: [{ id }], mode: 'merge' })
+    await P('apply-models', { route: 'cap-b', models: [{ id }], mode: 'merge' })
+    if (aInfo !== undefined) llm.modelInfo.set(KEY('cap-a', id), aInfo)
+    if (bInfo !== undefined) llm.modelInfo.set(KEY('cap-b', id), bInfo)
+    await P('set-route', {
+      alias: 'cap',
+      strategy: 'priority',
+      targets: [{ provider: 'cap-a', model: id }, { provider: 'cap-b', model: id, ...targetOpts }],
+    })
+    return rgw.adapter.resolveModel('router', 'cap')
+  }
+
+  // Two targets, deliberately unequal on every aggregated field.
+  let info = await resolveOver('agg1',
+    { context: { contextWindow: 128000 }, defaultMaxTokens: 8192, reasoning: eff('low', 'high') },
+    { context: { contextWindow: 32000 }, defaultMaxTokens: 4096, reasoning: eff('medium', 'max') })
+  const ids = (info.reasoning?.efforts || []).map((e) => e.id)
+  // UNION, because the clamp maps any advertised effort onto whatever the chosen
+  // target accepts. Intersecting would hide levels the route can serve — here it
+  // would hide all four, since the two targets share none.
+  assert(JSON.stringify(ids) === JSON.stringify(['low', 'medium', 'high', 'max']), 'efforts are the UNION of targets, ordered low→high: ' + JSON.stringify(ids))
+  // MINIMUM, because these drive upstream overflow checks: advertising 128000
+  // would let a request pass validation and then fail on the 32000 target.
+  assert(info.context.contextWindow === 32000, 'contextWindow is the MINIMUM across targets: ' + info.context.contextWindow)
+  assert(info.defaultMaxTokens === 4096, 'defaultMaxTokens is the MINIMUM across targets: ' + info.defaultMaxTokens)
+  assert(info.provider === 'router' && info.id === 'cap' && info.name === 'cap', 'aggregate keeps the VIRTUAL identity (else INVALID_MODEL_INFO drops the route)')
+
+  // A disabled target can never serve a call, so its capability must not be
+  // advertised.
+  info = await resolveOver('agg2',
+    { context: { contextWindow: 128000 }, reasoning: eff('low', 'high') },
+    { context: { contextWindow: 32000 }, reasoning: eff('medium', 'max') },
+    { enabled: false })
+  assert(JSON.stringify((info.reasoning?.efforts || []).map((e) => e.id)) === JSON.stringify(['low', 'high']), 'a disabled target contributes nothing: ' + JSON.stringify(info.reasoning?.efforts))
+  assert(info.context.contextWindow === 128000, 'minimum ignores disabled targets: ' + info.context.contextWindow)
+
+  // One unreadable target must degrade the aggregate, not erase it — the
+  // pre-aggregation rule discarded ALL metadata on any lookup failure.
+  info = await resolveOver('agg3', { context: { contextWindow: 128000 }, reasoning: eff('low', 'high') }, 'throw')
+  assert(info.context && info.context.contextWindow === 128000, 'a failed lookup leaves the healthy target\'s metadata intact: ' + JSON.stringify(info.context))
+  assert(JSON.stringify((info.reasoning?.efforts || []).map((e) => e.id)) === JSON.stringify(['low', 'high']), 'a failed lookup does not erase reasoning: ' + JSON.stringify(info.reasoning))
+
+  // A route whose every target declares no reasoning must OMIT the field. An
+  // empty efforts array is rejected upstream as INVALID_MODEL_REASONING, which
+  // drops the whole route from every selector.
+  info = await resolveOver('agg4', { context: { contextWindow: 1000 } }, { context: { contextWindow: 2000 } })
+  assert(!('reasoning' in info), 'no reasoning-capable target => the field is OMITTED, never empty: ' + JSON.stringify(info.reasoning))
+
+  // defaultEffort is only carried when every reasoning-capable target agrees;
+  // otherwise a request that asked for nothing would silently get one target's
+  // preference.
+  info = await resolveOver('agg5',
+    { reasoning: { ...eff('low', 'high'), defaultEffort: 'high' } },
+    { reasoning: { ...eff('low', 'high'), defaultEffort: 'low' } })
+  assert(info.reasoning.defaultEffort === undefined, 'conflicting target defaults yield NO route default: ' + info.reasoning.defaultEffort)
+  info = await resolveOver('agg6',
+    { reasoning: { ...eff('low', 'high'), defaultEffort: 'high' } },
+    { reasoning: { ...eff('low', 'high'), defaultEffort: 'high' } })
+  assert(info.reasoning.defaultEffort === 'high', 'unanimous target defaults become the route default: ' + info.reasoning.defaultEffort)
+
+  // --- the clamp, exercised through REAL dispatch ---------------------------
+  // This is the load-bearing half of the union: DSH validates the request
+  // against the route (the union), then the router forwards to one target whose
+  // own prepareCall validates against ITS list. The mock throws
+  // UNSUPPORTED_REASONING_EFFORT exactly as the real runtime does, so an
+  // unclamped forward would surface as a target failure here.
+  const drain = async (opts) => {
+    let guard = 0
+    for await (const _ of rgw.adapter.stream(opts)) { if (++guard > 40) break }
+  }
+  const baseCall = (model, effort) => ({
+    provider: 'router', model,
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
+    ...(effort === undefined ? {} : { reasoningEffort: effort }),
+  })
+
+  // `medium` is advertised by the route (cap-b offers it) but cap-a, the first
+  // priority target, does not. It must be clamped, not forwarded verbatim.
+  await resolveOver('clamp1', { reasoning: eff('low', 'high') }, { reasoning: eff('medium', 'max') })
+  llm.effortsSeen.length = 0
+  await drain(baseCall('cap', 'medium'))
+  let seen = llm.effortsSeen.filter((e) => e.provider === 'cap-a')
+  assert(seen.length === 1, 'the first target was tried exactly once (no fallback burned): ' + JSON.stringify(llm.effortsSeen))
+  // UP first, mirroring pi-ai's own clampThinkingLevel, so a routed call lands
+  // where a direct call to that provider would. Up is also the forgiving
+  // direction: over-delivering costs tokens, under-delivering silently returns a
+  // weaker answer than was asked for.
+  assert(seen[0].effort === 'high', 'an unoffered effort clamps UP to the next level the target offers: ' + seen[0].effort)
+
+  // With nothing above the request, clamp down to the highest offered.
+  await resolveOver('clamp2', { reasoning: eff('low', 'medium') }, { reasoning: eff('max') })
+  llm.effortsSeen.length = 0
+  await drain(baseCall('cap', 'max'))
+  seen = llm.effortsSeen.filter((e) => e.provider === 'cap-a')
+  assert(seen[0].effort === 'medium', 'with nothing above, the effort clamps DOWN to the highest offered: ' + seen[0].effort)
+
+  // A target declaring no reasoning rejects ANY effort, so the only way to use
+  // it is to send none.
+  await resolveOver('clamp3', {}, { reasoning: eff('high') })
+  llm.effortsSeen.length = 0
+  await drain(baseCall('cap', 'high'))
+  seen = llm.effortsSeen.filter((e) => e.provider === 'cap-a')
+  assert(seen[0].effort === undefined, 'a non-reasoning target receives NO effort rather than a rejected one: ' + seen[0].effort)
+
+  // An effort the target does offer must pass through untouched.
+  await resolveOver('clamp4', { reasoning: eff('low', 'high') }, { reasoning: eff('low', 'high') })
+  llm.effortsSeen.length = 0
+  await drain(baseCall('cap', 'high'))
+  seen = llm.effortsSeen.filter((e) => e.provider === 'cap-a')
+  assert(seen[0].effort === 'high', 'an offered effort passes through unchanged: ' + seen[0].effort)
+
+  // A caller asking for nothing must stay asking for nothing: inventing an
+  // effort here would change the request the user made.
+  llm.effortsSeen.length = 0
+  await drain(baseCall('cap', undefined))
+  seen = llm.effortsSeen.filter((e) => e.provider === 'cap-a')
+  assert(seen[0].effort === undefined, 'no requested effort forwards no effort: ' + seen[0].effort)
+
+  // An adapter may use its own vocabulary; those ids cannot be ordered against
+  // the known levels, so guessing a neighbour would be inventing a level.
+  await resolveOver('clamp5', { reasoning: eff('turbo', 'ultra') }, { reasoning: eff('high') })
+  llm.effortsSeen.length = 0
+  await drain(baseCall('cap', 'high'))
+  seen = llm.effortsSeen.filter((e) => e.provider === 'cap-a')
+  assert(seen[0].effort === undefined, 'an incomparable vocabulary yields no effort rather than a guess: ' + seen[0].effort)
+
+  await P('delete-route', { alias: 'cap' })
+  await P('delete-provider', { route: 'cap-a' })
+  await P('delete-provider', { route: 'cap-b' })
+}
 
 // --- external model catalog prefs -------------------------------------------
 // The lookup is the plugin's only third-party request, so the default must be

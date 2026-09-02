@@ -22,6 +22,7 @@ import { getHealthTracker } from '../health'
 import { getStatsRecorder } from '../statsStore'
 import { orderTargets } from './strategy'
 import { buildCallConfig, buildTargetOptions } from './plan'
+import { effortForTarget } from './reasoning'
 import { routeExhausted } from './failure'
 import {
   ATTEMPT_TIMEOUT, firstErrorFrom, isFinishChunk, isProgressChunk,
@@ -113,7 +114,13 @@ export async function* dispatchRoute(
     const wire = wireModelOf(st(), target.provider, target.model)
     const attemptStart = Date.now()
     try {
-      const callConfig = buildCallConfig(target, wire, options)
+      // The requested effort is valid for the ROUTE (the union of its targets'
+      // efforts), but this one target may not offer it. Clamping before
+      // `prepareCall` is what keeps that from throwing
+      // UNSUPPORTED_REASONING_EFFORT here — which this loop cannot distinguish
+      // from a dead provider, and would therefore charge to the target's health.
+      const effort = await effortForTarget(ctx, llm, target, options.reasoningEffort, options.signal)
+      const callConfig = buildCallConfig(target, wire, { ...options, reasoningEffort: effort })
       const prepared = await llm.prepareCall(callConfig, options.signal)
       // The resolver may clamp/normalize the config (e.g. a model maxTokens
       // cap). DSH compares stream() options against `prepared.config` on

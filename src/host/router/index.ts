@@ -22,6 +22,7 @@
  *   strategy.ts  pure target ordering for each strategy
  *   plan.ts      route lookup + per-target config/options shaping
  *   metadata.ts  exact-model metadata for a virtual route
+ *   reasoning.ts capability aggregation + the per-target effort clamp
  *   chunks.ts    stream-chunk predicates, token extraction, deadline pull
  *   failure.ts   the ROUTE_EXHAUSTED error shape DSH will retry
  *   types.ts     the llm-service surface used, and per-generation state
@@ -30,10 +31,12 @@
 import type { HostCtx } from '../utils'
 import { ROUTER_ROUTE, COMPOSITE_ROUTE } from '../../shared/constants'
 import { makeRouterAdapter } from './adapter'
+import { clearModelInfoCache } from './reasoning'
 import { llmOf } from './types'
 
 export { makeRouterAdapter }
 export { computeTargetOrder } from './strategy'
+export { clampEffort } from './reasoning'
 
 /** The live registration handle, kept so a retry-budget edit can re-register.
  *
@@ -70,6 +73,10 @@ export function registerRouterAdapter(ctx: HostCtx): void {
   if (typeof ctxAny.effect !== 'function') return
   ctxAny.effect(() => {
     try {
+      // A fresh generation must not inherit capability resolved under the old
+      // configuration: a reinstall or settings reload can change what a target
+      // reports, and a stale union would advertise efforts nothing serves.
+      clearModelInfoCache()
       const handle = llm.registerAdapter([ROUTER_ROUTE, COMPOSITE_ROUTE], makeRouterAdapter(ctx))
       const owned = handle as unknown as { replace?: (providers: string[]) => void }
       liveRegistration = owned

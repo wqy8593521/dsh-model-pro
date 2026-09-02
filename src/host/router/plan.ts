@@ -65,7 +65,11 @@ export function planFor(
  * Only DSH's own call-config fields are carried; anything else on `options`
  * belongs to the stream call, not the config, and DSH compares the two for
  * drift. Undefined fields are OMITTED rather than passed as undefined, because
- * an explicit undefined would read as "caller asked for no value" downstream. */
+ * an explicit undefined would read as "caller asked for no value" downstream.
+ *
+ * `reasoningEffort` is expected to be ALREADY clamped for this target (see
+ * `reasoning.effortForTarget`): an effort the route advertises but this target
+ * rejects would throw inside the target's own `prepareCall`. */
 export function buildCallConfig(target: RouteTarget, wire: string, options: Record<string, any>): Record<string, unknown> {
   const c: Record<string, unknown> = { provider: target.provider, model: wire }
   if (options.reasoningEffort !== undefined) c.reasoningEffort = options.reasoningEffort

@@ -1,27 +1,22 @@
 /** Exact-model metadata for a virtual route.
  *
  * A route is not a model, so its capabilities have to be derived from the
- * targets that will actually serve it. This module owns that derivation.
+ * targets that will actually serve it. This module is the entry point for that
+ * derivation; the aggregation rules themselves live in `./reasoning`, next to
+ * the forwarding clamp that makes them safe.
  *
- * The current rule is the pre-split one: report the FIRST target's metadata.
- * It is kept deliberately unchanged here so the split stays behaviour-neutral —
- * but it is wrong in two ways that are worth naming, because this is where the
- * fix belongs:
- *
- *   - It ignores `enabled` and health, so the advertised capability can come
- *     from a target dispatch would never pick.
- *   - On any lookup failure it discards ALL metadata (context window, max
- *     tokens, modalities, reasoning) rather than the failed part.
- *
- * The planned replacement aggregates every eligible target — union of reasoning
- * efforts, minimum of context windows — which is why this lives in its own file
- * rather than inline in the adapter.
+ * History worth keeping, because it explains the shape: the original rule
+ * reported the FIRST target's metadata verbatim and discarded everything on any
+ * lookup failure. Both were wrong — the first target may be disabled, and a
+ * single dead target erased a route's entire capability. The union/minimum
+ * aggregation replaced it; see `./reasoning` for why each field aggregates in
+ * the direction it does.
  */
 
 import type { HostCtx } from '../utils'
-import { wireModelOf } from '../utils'
 import type { RouteSpec } from '../../shared/types'
 import type { LlmLike } from './types'
+import { aggregateRouteInfo } from './reasoning'
 
 /** Resolve one virtual model id to exact model metadata.
  *
@@ -37,14 +32,5 @@ export async function resolveRouteModel(
   model: string,
   signal?: AbortSignal,
 ): Promise<Record<string, unknown>> {
-  const base = { provider, id: model, name: model }
-  if (!spec || !llm || !spec.targets.length) return base
-  const first = spec.targets[0]
-  try {
-    const wire = wireModelOf(ctx.get('settings'), first.provider, first.model)
-    const info = await llm.resolveModelInfo(first.provider, wire, signal)
-    return { ...info, provider, id: model, name: model }
-  } catch {
-    return base
-  }
+  return aggregateRouteInfo(ctx, llm, spec, provider, model, signal)
 }
