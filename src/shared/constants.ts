@@ -146,3 +146,38 @@ export const DEFAULT_CATALOG_URL = 'https://models.dev/api.json'
  * third-party domain, so it happens because a user asked for it, never as a
  * side effect of opening a panel. */
 export const DEFAULT_CATALOG_ENABLED = false
+
+/** Credentials-service ref for the local Agent gateway bearer key. Unlike the
+ * settings document, this host-owned secret store survives plugin reinstalls
+ * without exposing plaintext configuration. */
+export const LOCAL_GATEWAY_CREDENTIAL_REF = 'DSH_MODEL_PRO_LOCAL_GATEWAY_KEY'
+
+/**
+ * The failure code DSH / pi-ai raise when a call requests a reasoning effort the
+ * exact model does not offer.
+ *
+ * The router recognizes it rather than echoing it verbatim: `reasoning.effortForTarget`
+ * clamps every forwarded effort onto the target's own list, so this code can
+ * only surface when that list was UNAVAILABLE (metadata lookup failed) or
+ * disagrees with what the upstream really accepts. Distinguishing it from an
+ * ordinary dispatch failure is what lets the dispatch loop report the real cause
+ * instead of echoing a message that blames the level.
+ */
+export const UNSUPPORTED_EFFORT_CODE = 'UNSUPPORTED_REASONING_EFFORT'
+
+/** Persisted preference key and stable loopback HTTP path for the opt-in local
+ * OpenAI-compatible route gateway. The bearer key itself is NEVER persisted. */
+export const LOCAL_GATEWAY_KEY = 'localGateway'
+export const LOCAL_GATEWAY_PATH = '/model-pro/v1'
+
+/**
+ * Schema-keeper sentinel model id written to a freshly created custom provider
+ * that has no explicit models yet. REQUIRED: llm-pi-ai's `resolveRouteModels`
+ * throws "resolves no models; ... must be listed in configuration" if a custom
+ * provider's `models` is empty. This sentinel keeps settings valid until the
+ * user adds real models — it MUST be filtered out of every UI surface and
+ * never be returned as a testable model. Treat it as opaque: the UI sees a
+ * provider with NO explicit models (usesCatalog semantics), not a provider
+ * whose only model is "placeholder".
+ */
+export const PLACEHOLDER_MODEL_ID = 'placeholder'

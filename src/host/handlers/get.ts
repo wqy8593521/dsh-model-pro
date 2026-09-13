@@ -1,8 +1,9 @@
 /** get-provider handler — returns full provider details for the editor view. */
 
-import { readProviders, readDisabled, readProfile } from '../utils'
+import { readProviders, readDisabled, readProfile, readRealModels } from '../utils'
 import type { HostCtx } from '../utils'
 import type { HeaderPair } from '../../shared/types'
+import { PLACEHOLDER_MODEL_ID } from '../../shared/constants'
 import { decryptSecret } from '../crypto'
 
 export async function getProvider(ctx: HostCtx, args: { route?: string; includeSecret?: boolean }) {
@@ -21,10 +22,8 @@ export async function getProvider(ctx: HostCtx, args: { route?: string; includeS
     p.headers && typeof p.headers === 'object'
       ? Object.entries(p.headers).map(([k, v]) => ({ name: k, value: String(v) }))
       : []
-  const hasExplicit = Array.isArray(p.models) && p.models.length > 0
-  const models = hasExplicit
-    ? p.models!.map((m) => (m && typeof m === 'object' ? { ...m } : { id: String(m) }))
-    : []
+  const models = readRealModels(p)
+  const hasExplicit = models.length > 0
 
   // Advertised model ids for the test dropdown (advisory; may be empty). For a
   // catalog-route (or enabled custom) provider this is the real list the
@@ -35,7 +34,9 @@ export async function getProvider(ctx: HostCtx, args: { route?: string; includeS
     if (llm !== undefined) {
       try {
         const m = await (llm as any).listModels(route)
-        if (Array.isArray(m)) availableModels = m.map((x: any) => (x && typeof x.id === 'string' ? x.id : '')).filter(Boolean)
+        if (Array.isArray(m)) availableModels = m
+          .map((x: any) => (x && typeof x.id === 'string' ? x.id : ''))
+          .filter((id: string) => !!id && id !== PLACEHOLDER_MODEL_ID)
       } catch { /* advisory only */ }
     }
   }

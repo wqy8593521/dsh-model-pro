@@ -1,6 +1,6 @@
 /** apply-models handler — replace/merge/remove models on a provider. */
 
-import { NS } from '../../shared/constants'
+import { NS, PLACEHOLDER_MODEL_ID } from '../../shared/constants'
 import type { HostCtx } from '../utils'
 import { readProviders, readDisabled, readProfile, checkWritable, writeSection } from '../utils'
 import type { ModelEntry } from '../../shared/types'
@@ -102,6 +102,13 @@ export async function applyModels(
     next = existing.filter((m) => !toRemove.has(m.id))
   } else {
     return { ok: false as const, error: `未知 mode: ${mode}` }
+  }
+
+  // The sentinel is only needed while no real model exists. Replace/merge must
+  // remove it atomically with the first real model, otherwise it leaks into the
+  // adapter's advertised catalog and may be selected by other DSH consumers.
+  if (next.some((m) => m.id !== PLACEHOLDER_MODEL_ID)) {
+    next = next.filter((m) => m.id !== PLACEHOLDER_MODEL_ID)
   }
 
   // Prevent removing all models from custom providers

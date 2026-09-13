@@ -1,6 +1,6 @@
 /** create-provider handler — creates a new provider in the providers dict. */
 
-import { PROTOS } from '../../shared/constants'
+import { PLACEHOLDER_MODEL_ID, PROTOS } from '../../shared/constants'
 import type { HostCtx } from '../utils'
 import { readProviders, readDisabled, checkWritable, writeSection, makeHostPlain } from '../utils'
 import { setApiKey } from './updateKey'
@@ -34,7 +34,10 @@ export async function createProvider(
   if (args.baseURL && args.baseURL.trim()) profile.baseURL = args.baseURL.trim()
   else return { ok: false as const, error: '新建提供商必须填写 baseURL' }
   if (args.apiKeyEnv && args.apiKeyEnv.trim()) profile.apiKeyEnv = args.apiKeyEnv.trim()
-  profile.models = [{ id: 'placeholder', name: 'placeholder' }]
+  // llm-pi-ai refuses a custom provider whose model list is empty. Keep one
+  // internal schema sentinel until the first real model is added; every read/UI
+  // path filters it, so users never see or test it as an actual model.
+  profile.models = [{ id: PLACEHOLDER_MODEL_ID, name: PLACEHOLDER_MODEL_ID }]
 
   try {
     const next: Record<string, unknown> = {}

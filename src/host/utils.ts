@@ -8,8 +8,8 @@
  * llm-pi-ai settings section safely.
  */
 
-import { NS, ROUTES_KEY } from '../shared/constants'
-import type { ProviderProfile, RoutesMap } from '../shared/types'
+import { NS, ROUTES_KEY, PLACEHOLDER_MODEL_ID } from '../shared/constants'
+import type { ModelEntry, ProviderProfile, RoutesMap } from '../shared/types'
 
 /** Settings service interface (subset we use) */
 export interface SettingsService {
@@ -94,6 +94,20 @@ export function readProfile(
   const p = providers[route]
   if (!p || typeof p !== 'object') return null
   return p
+}
+
+/** True only for the internal model that keeps a new custom provider valid. */
+export function isPlaceholderModel(model: unknown): boolean {
+  if (model && typeof model === 'object') return (model as { id?: unknown }).id === PLACEHOLDER_MODEL_ID
+  return String(model) === PLACEHOLDER_MODEL_ID
+}
+
+/** Return configured models as copies, excluding the internal schema sentinel. */
+export function readRealModels(profile: ProviderProfile | null): ModelEntry[] {
+  if (!Array.isArray(profile?.models)) return []
+  return profile.models
+    .filter((model) => !isPlaceholderModel(model))
+    .map((model) => (model && typeof model === 'object' ? { ...model } : { id: String(model) }))
 }
 
 /** Read the smart-routing alias table from the llm-pi-ai section.

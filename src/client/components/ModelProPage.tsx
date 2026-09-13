@@ -75,7 +75,12 @@ export function ModelProPage({ t, call }: Props) {
       setForm(EMPTY_FORM()); setErrors({}); setCreating(false)
       await refresh()
       const got = await call('get-provider', { route: r.route })
-      setInitTab(mode === 'test' ? 'test' : 'models')
+      const hasTestableModel = (Array.isArray(got.models) && got.models.length > 0)
+        || (Array.isArray(got.availableModels) && got.availableModels.length > 0)
+      // A new custom provider initially has only an internal schema sentinel.
+      // If no real model was discovered/configured, "create & test" must lead
+      // to model setup instead of opening an unusable test page.
+      setInitTab(mode === 'test' && hasTestableModel ? 'test' : 'models')
       setSelected(got)
     } catch (e) { fail(e) } finally { setBusy(false) }
   }

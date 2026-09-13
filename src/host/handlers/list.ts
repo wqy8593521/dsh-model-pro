@@ -3,7 +3,7 @@
 import { NS, PROTOS } from '../../shared/constants'
 import type { ProviderListItem } from '../../shared/types'
 import type { HostCtx } from '../utils'
-import { readProviders, readDisabled, readProfile, checkWritable } from '../utils'
+import { readProviders, readDisabled, readProfile, readRealModels, checkWritable } from '../utils'
 
 export async function listProviders(ctx: HostCtx) {
   const st = ctx.get('settings')
@@ -24,7 +24,8 @@ export async function listProviders(ctx: HostCtx) {
     const p = readProfile(providers, route) || readProfile(disabled, route)
     if (!p) continue
     const entry = dirMap.get(route)
-    const hasExplicit = Array.isArray(p.models) && p.models.length > 0
+    const modelCount = readRealModels(p).length
+    const hasExplicit = modelCount > 0
     const isDisabled =
       (p as any).disabled === true || Object.prototype.hasOwnProperty.call(disabled, route)
 
@@ -38,7 +39,7 @@ export async function listProviders(ctx: HostCtx) {
       disabled: isDisabled,
       hasHeaders: !!(p.headers && typeof p.headers === 'object' && Object.keys(p.headers).length > 0),
       headerCount: p.headers && typeof p.headers === 'object' ? Object.keys(p.headers).length : 0,
-      modelCount: hasExplicit ? p.models!.length : 0,
+      modelCount,
       usesCatalog: !hasExplicit,
       hasSecret: !!(p as any).apiKeyEnc,
     })
