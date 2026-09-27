@@ -13,6 +13,7 @@ import type { HostCtx } from '../utils'
 import { getLogRing, getStatsRecorder, persistStats } from '../statsStore'
 import { readProviders, readDisabled } from '../utils'
 import { getHealthTracker } from '../health'
+import { errorText } from '../errorText'
 
 /** Recursively drop `undefined` values (arrays/objects) so the result is
  * lossless JSON: the cordis host->client RPC boundary rejects `undefined`
@@ -115,8 +116,8 @@ export async function probeTarget(ctx: HostCtx, args: { provider?: string; model
       if (chunk && typeof chunk === 'object' && chunk.type === 'finish') {
         const reason = chunk.reason
         if (reason && typeof reason === 'object' && reason.kind === 'error') {
-          const msg = (reason.failure && reason.failure.message) || reason.message || '探测失败'
-          throw new Error(String(msg))
+          const msg = errorText(reason.failure ?? reason.message, '探测失败')
+          throw new Error(msg)
         }
         stopReason = typeof reason === 'string' ? reason : (reason && typeof reason.kind === 'string' ? reason.kind : '')
       }
@@ -130,7 +131,7 @@ export async function probeTarget(ctx: HostCtx, args: { provider?: string; model
     h.markUp(provider, model, r.latencyMs)
     return r
   } catch (err) {
-    const msg = String((err as Error)?.message || err)
+    const msg = errorText(err, '探测失败')
     h.markDown(provider, model, msg)
     return { ok: false as const, provider, model, error: msg }
   } finally {

@@ -5,13 +5,15 @@
  * vocabulary alone.
  */
 
+import { errorText } from '../errorText'
+
 /** The error message carried by a terminal error `finish`, if it is one. */
 export function firstErrorFrom(chunk: Record<string, any>): string | undefined {
   if (!chunk || chunk.type !== 'finish') return undefined
   const reason = chunk.reason
   if (reason && typeof reason === 'object') {
     if (reason.kind === 'error') {
-      return String((reason.failure && reason.failure.message) || reason.message || '未知错误')
+      return errorText(reason.failure ?? reason.message, '未知错误')
     }
   }
   return undefined

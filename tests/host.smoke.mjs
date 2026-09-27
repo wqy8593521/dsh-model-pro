@@ -699,6 +699,25 @@ await P('set-route', {
   assert(h && typeof h.lastError === 'string' && /负载/.test(h.lastError), 'mid-stream failure updates target health: ' + JSON.stringify(h))
 }
 
+// Some OpenAI-compatible gateways incorrectly put a structured object in
+// `failure.message` and a null provider code. Never leak "null: [object Object]"
+// to the assistant; recursively extract the useful nested message.
+llm.scriptedStreams.set('objecterr', async function* () {
+  yield { type: 'finish', reason: { kind: 'error', failure: {
+    message: { error: { message: '上游模型暂时不可用', type: 'server_error' } }, code: null,
+  } } }
+})
+await P('create-provider', { route: 'objecterr', baseURL: 'https://object-error/v1' }).catch(() => {})
+await P('set-route', { alias: 'auto-objecterr', strategy: 'priority', targets: [{ provider: 'objecterr', model: 'x' }] })
+{
+  let structuredErr = ''
+  try {
+    for await (const _ of rreg.adapter.stream({ provider: 'router', model: 'auto-objecterr', messages: [], temperature: 0, maxTokens: 16 })) { /* drain */ }
+  } catch (e) { structuredErr = String(e?.message || e) }
+  assert(/上游模型暂时不可用/.test(structuredErr), 'structured provider error exposes nested human message: ' + structuredErr)
+  assert(!/\[object Object\]|null:/.test(structuredErr), 'structured provider error never leaks object coercion: ' + structuredErr)
+}
+
 // --- all targets dead -> clean route-level error (no infinite hang) ---
 llm.failProviders.add('brokengw')
 await P('set-route', { alias: 'dead', strategy: 'priority', targets: [{ provider: 'brokengw', model: 'x' }] })

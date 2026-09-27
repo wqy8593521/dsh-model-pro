@@ -20,6 +20,7 @@ import { wireModelOf } from '../utils'
 import type { RouteSpec, RouteTarget } from '../../shared/types'
 import { getHealthTracker } from '../health'
 import { getStatsRecorder } from '../statsStore'
+import { errorText } from '../errorText'
 import { orderTargets } from './strategy'
 import { buildCallConfig, buildTargetOptions } from './plan'
 import { effortForTarget } from './reasoning'
@@ -158,7 +159,7 @@ export async function* dispatchRoute(
           // an in-flight next() parked on a hung socket — awaiting its
           // return() would stall this attempt past the deadline itself.
           void tryReturn(iterator)
-          const timedOut = String((error as Error)?.message || error) === ATTEMPT_TIMEOUT
+          const timedOut = errorText(error, '') === ATTEMPT_TIMEOUT
           const why = timedOut ? `连接超时（${attemptTimeoutMs}ms 内无响应）` : '连接失败'
           health().markDown(target.provider, target.model, why)
           stats().record({
@@ -247,18 +248,19 @@ export async function* dispatchRoute(
         try {
           item = await iterator.next()
         } catch (error) {
-          health().markDown(target.provider, target.model, String((error as Error)?.message || error))
+          const transportError = errorText(error, '连接失败')
+          health().markDown(target.provider, target.model, transportError)
           stats().record({
             route: routeName, provider: target.provider, model: wire, ok: false,
             latencyMs: Date.now() - t0, tryIndex, sessionId: sid,
-            error: `传输中断: ${String((error as Error)?.message || error)}`,
+            error: `传输中断: ${transportError}`,
           })
-          throw new Error(`目标 ${target.provider}/${wire} 传输中断: ${String((error as Error)?.message || error)}`)
+          throw new Error(`目标 ${target.provider}/${wire} 传输中断: ${transportError}`)
         }
         if (item.done) {
           const reason = terminalReason && typeof terminalReason === 'object' ? terminalReason : undefined
           const errText = reason && reason.kind === 'error'
-            ? String((reason.failure && reason.failure.message) || (reason as any).message || '未知错误')
+            ? errorText(reason.failure ?? (reason as any).message, '未知错误')
             : undefined
           const aborted = !!reason && reason.kind === 'aborted'
           if (errText !== undefined) {
@@ -290,12 +292,13 @@ export async function* dispatchRoute(
       // prepareCall / dispatch failure for this target — but a caller abort
       // ends the whole route instead of moving on.
       if (options.signal?.aborted) return
+      const raw = errorText(error)
       stats().record({
         route: routeName, provider: target.provider, model: wire, ok: false,
         latencyMs: Date.now() - t0, tryIndex, sessionId: sid,
-        error: String((error as Error)?.message || error),
+        error: `目标 ${target.provider}/${wire}: ${raw}`,
       })
-      lastErr = `目标 ${target.provider}/${wire}: ${String((error as Error)?.message || error)}`
+      lastErr = `目标 ${target.provider}/${wire}: ${raw}`
     }
   }
 

@@ -9,8 +9,10 @@
  * `ctx.get('timer')`, no `inject` needed — and the whole call is raced
  * against a hard deadline with `Promise.race`. */
 
+import { PLACEHOLDER_MODEL_ID } from '../../shared/constants'
 import type { HostCtx } from '../utils'
 import { readProviders, readDisabled } from '../utils'
+import { errorText } from '../errorText'
 
 const DEFAULT_TIMEOUT_MS = 30000
 
@@ -29,9 +31,7 @@ function finishReason(reason: unknown): { ok: true; stop: string } | { ok: false
   if (typeof reason === 'object') {
     const r = reason as { kind?: unknown; failure?: { message?: unknown }; message?: unknown }
     if (r.kind === 'error') {
-      const msg = (r.failure && typeof r.failure.message === 'string' && r.failure.message)
-        || (typeof r.message === 'string' && r.message)
-        || '模型调用失败'
+      const msg = errorText(r.failure ?? r.message, '模型调用失败')
       return { ok: false as const, error: msg }
     }
     if (typeof r.kind === 'string' && r.kind.length > 0) return { ok: true as const, stop: r.kind }
@@ -64,10 +64,13 @@ export async function testProvider(ctx: HostCtx, args: {
   // an explicit id the user typed is still passed through so the adapter's own
   // error (if any) surfaces with a clear message.
   let model = typeof args?.model === 'string' && args.model.trim() ? args.model.trim() : ''
+  // The create-time placeholder is an internal schema keeper, never a model a
+  // user may select or explicitly test.
+  if (model === PLACEHOLDER_MODEL_ID) model = ''
   let knownModels: Array<{ id: string }> = []
   try {
     const m = await (llm as any).listModels(route)
-    if (Array.isArray(m)) knownModels = m
+    if (Array.isArray(m)) knownModels = m.filter((x: any) => x && x.id !== PLACEHOLDER_MODEL_ID)
   } catch { /* advisory only */ }
 
   if (!model && knownModels.length) model = knownModels[0].id
@@ -145,7 +148,7 @@ export async function testProvider(ctx: HostCtx, args: {
   try {
     return await Promise.race([run, deadline])
   } catch (err) {
-    const msg = String((err as Error)?.message || err)
+    const msg = errorText(err)
     return { ok: false as const, model, error: msg }
   } finally {
     if (typeof cancelDeadline === 'function') cancelDeadline()

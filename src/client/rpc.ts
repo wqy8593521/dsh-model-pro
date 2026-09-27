@@ -12,12 +12,24 @@ import { METHOD_MAP } from '../shared/contract'
 
 type RemoteLike = Record<string, (args: unknown) => Promise<any>>
 
-const msgOf = (e: unknown): string =>
-  typeof e === 'string'
-    ? e
-    : e && typeof e === 'object' && typeof (e as any).message === 'string'
-      ? (e as any).message
-      : ''
+const msgOf = (value: unknown): string => {
+  const seen = new Set<unknown>()
+  const visit = (e: unknown, depth: number): string => {
+    if (typeof e === 'string') return e !== '[object Object]' ? e : ''
+    if (!e || typeof e !== 'object' || depth > 4 || seen.has(e)) return ''
+    seen.add(e)
+    const r = e as Record<string, unknown>
+    for (const key of ['message', 'error', 'detail', 'failure', 'cause']) {
+      const text = visit(r[key], depth + 1)
+      if (text) return text
+    }
+    try {
+      const json = JSON.stringify(e)
+      return json === '{}' ? '' : json
+    } catch { return '' }
+  }
+  return visit(value, 0)
+}
 
 export function createCall(t: TFunc, getRemote: () => RemoteLike | null) {
   return async function call(method: string, payload?: Record<string, unknown>): Promise<any> {
