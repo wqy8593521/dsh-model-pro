@@ -214,6 +214,7 @@ export function createStatsRecorder(): StatsRecorder {
         ...(error ? { error } : {}),
       })
       dirty = true
+      requestStatsPersist?.()
     },
     byRoute: () => ({ ...byRoute }),
     byTarget: () => ({ ...byTarget }),
@@ -287,4 +288,22 @@ export async function persistStats(ctx: HostCtx, opts?: { force?: boolean }): Pr
   } catch {
     return false
   }
+}
+
+/** Requester function dispatched after each completed call, to coalesce
+ * persistence writes via a microtask queue. Set once per fiber (index.ts's
+ * apply hook) and reset here when the fiber goes away. */
+export let requestStatsPersist: (() => void) | undefined
+
+/** Install a requester that coalesces writes onto a microtask queue.
+ * The previous requester is replaced; returning the release function
+ * allows the caller to clean up when the fiber is disposed. */
+export function setStatsPersistRequester(fn: () => void): () => void {
+  requestStatsPersist = fn
+  return () => { requestStatsPersist = undefined }
+}
+
+/** Reset the persistence requester (used by index.ts on fresh fibers). */
+export function resetStatsPersistRequester(): void {
+  requestStatsPersist = undefined
 }

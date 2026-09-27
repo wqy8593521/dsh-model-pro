@@ -289,7 +289,7 @@ export const ZH = {
 
   // Observability
   obsTitle: '观测台',
-  obsHint: '本次会话内的路由调用统计与请求日志（token 计数来自适配器上报，缺失时留空）。',
+  obsHint: '路由调用统计与请求日志会持久保存；页面刷新、主机重启及插件卸载重装后仍会恢复（仅保留最近的有界日志尾部）。token 计数来自适配器上报，缺失时留空。',
   obsCalls: '总调用',
   obsSuccessRate: '成功率',
   obsAvgLatency: '平均耗时',
@@ -666,7 +666,7 @@ export const EN = {
 
   // Observability
   obsTitle: 'Observability',
-  obsHint: 'Route-call statistics and request log for this session (token counts come from the adapter; may be blank).',
+  obsHint: 'Route statistics and a bounded recent request-log tail are persisted across page reloads, host restarts, and plugin reinstalls. Token counts come from adapter reports and stay blank when unavailable.',
   obsCalls: 'Total calls',
   obsSuccessRate: 'Success rate',
   obsAvgLatency: 'Avg latency',

@@ -424,6 +424,7 @@ assert(r.providers.find((x) => x.route === 'flag-gw').disabled === true, 'reinst
     noteK: 1,
   })
   const late = createLateSettings(lateStore)
+  const cleanupsBeforeLate = cleanups.length
   listeners['settings/updated'] = []
   const lateCtx = {
     get: (name) => (name === 'settings' ? late : name === 'llm' ? llm : name === 'credentials' ? creds : undefined),
@@ -452,10 +453,17 @@ assert(r.providers.find((x) => x.route === 'flag-gw').disabled === true, 'reinst
   assert(!Object.hasOwn(lateDoc().providers || {}, 'lateGw'), 'parked provider removed from providers after late registration')
   assert(lateDoc().noteK === 1, 'foreign section keys survive the late re-park write')
 
-  // Restore shared harness state: drop the second runtime + the listeners it
-  // registered, so the following tests keep driving the ORIGINAL instance.
+  // Restore shared harness state: tear the second fiber down the way Cordis
+  // would on unload — run the effects it registered (LIFO), which releases its
+  // per-call stats-persist requester (a fiber-global) back to the original
+  // fiber — then drop the second runtime + its listeners so the following tests
+  // keep driving the ORIGINAL instance. Re-apply the original fiber afterward so
+  // its observability singletons + persist requester are the live ones again.
+  const lateCleanups = cleanups.splice(cleanupsBeforeLate)
+  for (let i = lateCleanups.length - 1; i >= 0; i--) await Promise.resolve(lateCleanups[i]())
   runtimes.pop()
   listeners['settings/updated'] = []
+  apply(ctx)
 }
 
 // enable: clears the marker and returns it to providers
@@ -1004,6 +1012,13 @@ await P('set-route', { alias: 'auto-camel', strategy: 'priority', targets: [{ pr
   assert(snap && typeof snap === 'object', 'routeStats snapshot persisted to settings: ' + JSON.stringify(Object.keys(store.doc())))
   assert(snap.byTarget && Object.keys(snap.byTarget).some((k) => k.includes('camelgw')), 'aggregate stats persisted: ' + JSON.stringify(snap.byTarget && Object.keys(snap.byTarget)))
   assert(Array.isArray(snap.logs) && snap.logs.some((e) => e.route === 'auto-camel'), 'request-log tail persisted: ' + JSON.stringify(snap.logs && snap.logs.length))
+
+  // Run the real unload cleanup before re-apply. The flush cleanup returns its
+  // promise, so Cordis can await it instead of losing the last log write while
+  // tearing the plugin down. Settings survive exactly as they do on reinstall.
+  const unloadBatch = cleanups.splice(0, cleanups.length)
+  for (let i = unloadBatch.length - 1; i >= 0; i--) await Promise.resolve(unloadBatch[i]())
+  assert(Array.isArray(store.doc().routeStats?.logs) && store.doc().routeStats.logs.some((e) => e.route === 'auto-camel'), 'unload awaited final request-log persistence')
 
   // Simulate a page refresh / host restart: a brand-new fiber (fresh apply)
   // must re-hydrate the recorder + log ring from that snapshot rather than
