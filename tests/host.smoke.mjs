@@ -97,6 +97,12 @@ function createLlm(log = []) {
       return [{ id: 'gpt-4o', name: 'GPT-4o', contextWindow: 128000 }, { id: 'gpt-4o-mini', name: 'GPT-4o mini' }]
     },
     listModels: async (route) => {
+      // Synthetic registrations own their live model lists just like the real
+      // llm service; expose them so GET /models can enumerate smart routes.
+      const synthetic = registrations.find((r) => r.providers.includes(route))
+      if (synthetic && typeof synthetic.adapter.listModels === 'function') {
+        return synthetic.adapter.listModels(route)
+      }
       const p = (log.section().providers || {})[route]
       const ids = Array.isArray(p?.models)
         ? p.models.map((m) => m && typeof m === 'object' ? m.id : String(m))
@@ -208,11 +214,21 @@ const llm = createLlm(log)
 const cleanups = []
 const listeners = {}
 const timerCallbacks = []
+const webRoutes = []
+const webServer = {
+  host: '127.0.0.1',
+  port: 3080,
+  register: (route) => {
+    webRoutes.push(route)
+    return () => { const i = webRoutes.indexOf(route); if (i >= 0) webRoutes.splice(i, 1) }
+  },
+}
 const ctx = {
   get: (name) => (
     name === 'settings' ? store
       : name === 'llm' ? llm
         : name === 'credentials' ? creds
+          : name === 'webServer' ? webServer
           : name === 'timer' ? {
             interval: (fn, _ms) => { timerCallbacks.push(fn); return () => {} },
             timeout: (fn, ms) => { const id = setTimeout(fn, ms); return () => clearTimeout(id) },
@@ -235,17 +251,91 @@ const runtime = () => runtimes[runtimes.length - 1]
 const P = async (name, args) => runtime()[kebabToCamel(name)](args || {})
 const provs = () => store.doc().providers || {}
 const dis = () => store.doc().disabledProviders || {}
+const gatewayRoute = () => webRoutes.find((x) => x.path === '/model-pro/v1')
+async function gatewayRequest({ method = 'GET', path = '/model-pro/v1/health', key = '', body } = {}) {
+  const chunks = body === undefined ? [] : [new TextEncoder().encode(JSON.stringify(body))]
+  const req = {
+    method,
+    url: path,
+    headers: key ? { authorization: `Bearer ${key}` } : {},
+    async *[Symbol.asyncIterator]() { yield* chunks },
+  }
+  const reply = { status: 0, headers: {}, body: '' }
+  const res = {
+    writeHead(status, headers = {}) { reply.status = status; reply.headers = headers },
+    write(value = '') { reply.body += String(value); return true },
+    end(value = '') { reply.body += String(value) },
+  }
+  await gatewayRoute().handler(req, res)
+  const isJson = String(reply.headers['content-type'] || '').includes('application/json')
+  return { ...reply, json: isJson && reply.body ? JSON.parse(reply.body) : undefined }
+}
 
 // --- list on empty ---
 let r = await P('list-providers')
 assert(r.ok && r.providers.length === 0, 'list on empty')
 assert(Array.isArray(r.protocols) && r.protocols.includes('openai-completions'), 'protocols returned')
 
+// --- local agent gateway: registered on the existing Web server, inert by
+// default, bearer-authenticated, credentials-backed, and OpenAI response-shaped. ---
+assert(gatewayRoute() && gatewayRoute().kind === 'prefix', 'local gateway registered on existing webServer')
+r = await P('get-local-gateway-prefs')
+assert(r.ok && r.prefs.enabled === false && r.hasTemporaryKey === false, 'local gateway ships disabled without a key')
+let http = await gatewayRequest()
+assert(http.status === 404, 'disabled gateway is indistinguishable from a missing route')
+r = await P('set-local-gateway-prefs', { enabled: true, generateKey: true })
+const gatewayKey = r.temporaryKey
+assert(r.ok && r.prefs.enabled === true && r.hasTemporaryKey === true && typeof gatewayKey === 'string' && gatewayKey.length >= 16, 'gateway enables, persists, and reveals generated key once')
+assert(store.doc().localGateway?.enabled === true && !JSON.stringify(store.doc()).includes(gatewayKey), 'gateway preference persists but plaintext key never enters settings')
+assert(credStore.get('DSH_MODEL_PRO_LOCAL_GATEWAY_KEY') === gatewayKey, 'gateway key persists in the host credentials service')
+r = await P('get-local-gateway-prefs')
+assert(r.hasTemporaryKey === true && r.temporaryKey === undefined, 'ordinary reads never reveal the active key')
+http = await gatewayRequest({ key: 'wrong-key-wrong-key' })
+assert(http.status === 401, 'gateway rejects an invalid bearer key')
+http = await gatewayRequest({ key: gatewayKey })
+assert(http.status === 200 && http.json.ok === true, 'gateway health accepts the temporary bearer key')
+http = await gatewayRequest({ path: '/model-pro/v1/models', key: gatewayKey })
+assert(http.status === 200 && http.json.object === 'list' && Array.isArray(http.json.data), 'gateway lists models in OpenAI list shape')
+assert(http.json.data.some((m) => m.id === 'deepseek/deepseek-chat' && m.object === 'model' && m.owned_by === 'deepseek'), 'gateway model ids are directly usable provider/model addresses: ' + http.body)
+assert(!http.json.data.some((m) => /placeholder/.test(m.id)), 'gateway model list hides the internal placeholder sentinel')
+http = await gatewayRequest({ method: 'POST', path: '/model-pro/v1/chat/completions', key: gatewayKey, body: {
+  model: 'my-gw/placeholder', messages: [{ role: 'user', content: 'ping' }], max_tokens: 16,
+} })
+assert(http.status === 200 && http.json.object === 'chat.completion' && http.json.choices[0].message.content === 'pong', 'gateway dispatches and returns OpenAI chat completion shape: ' + http.body)
+http = await gatewayRequest({ method: 'POST', path: '/model-pro/v1/chat/completions', key: gatewayKey, body: {
+  model: 'deepseek/deepseek-chat', messages: [{ role: 'user', content: 'ping' }], max_tokens: 16, stream: true,
+} })
+assert(http.status === 200 && /text\/event-stream/.test(http.headers['content-type'] || ''), 'stream=true opens an SSE response')
+const events = http.body.split('\n\n').filter(Boolean).map((line) => line.replace(/^data: /, ''))
+assert(events.at(-1) === '[DONE]', 'stream ends with the OpenAI [DONE] sentinel: ' + http.body)
+const chunks = events.slice(0, -1).map((event) => JSON.parse(event))
+assert(chunks[0].object === 'chat.completion.chunk' && chunks[0].choices[0].delta.role === 'assistant', 'stream starts with assistant role chunk')
+assert(chunks.some((c) => c.choices?.[0]?.delta?.content === 'pong'), 'stream forwards text deltas incrementally: ' + http.body)
+assert(chunks.at(-1).choices[0].finish_reason === 'stop' && chunks.at(-1).usage, 'stream sends terminal finish reason and usage')
+// A fresh plugin fiber drops only its cache. It must resolve the same bearer
+// secret from credentials and keep the already-enabled endpoint operational.
+apply(ctx)
+r = await P('get-local-gateway-prefs')
+assert(r.hasTemporaryKey === true && r.temporaryKey === undefined, 'reinstall reloads persisted gateway key without revealing it')
+http = await gatewayRequest({ key: gatewayKey })
+assert(http.status === 200, 'persisted gateway key remains valid after reinstall')
+r = await P('set-local-gateway-prefs', { temporaryKey: '' })
+assert(r.ok && r.hasTemporaryKey === false && !credStore.has('DSH_MODEL_PRO_LOCAL_GATEWAY_KEY'), 'gateway key can be revoked from credentials immediately')
+http = await gatewayRequest({ key: gatewayKey })
+assert(http.status === 404, 'enabled gateway without key remains closed')
+await P('set-local-gateway-prefs', { enabled: false })
+
 // --- create (validates route + baseURL) ---
 r = await P('create-provider', { route: 'my-gw', displayName: 'My Gateway', api: 'openai-completions', baseURL: 'https://gw/v1', apiKeyEnv: 'GW_KEY' })
 assert(r.ok, 'create ok: ' + JSON.stringify(r))
 assert(/^[A-Za-z0-9_.-]+$/.test(provs()['my-gw'] && 'my-gw'), 'route format kept')
-assert(Array.isArray(provs()['my-gw'].models) && provs()['my-gw'].models.length === 1, 'placeholder model added')
+assert(Array.isArray(provs()['my-gw'].models) && provs()['my-gw'].models.length === 1, 'internal schema sentinel added')
+r = await P('get-provider', { route: 'my-gw' })
+assert(r.ok && r.models.length === 0 && r.availableModels.length === 0 && r.usesCatalog === true, 'schema sentinel is hidden from provider details')
+r = await P('list-providers')
+assert(r.providers[0].modelCount === 0 && r.providers[0].usesCatalog === true, 'schema sentinel is hidden from provider list counts')
+r = await P('test-provider', { route: 'my-gw' })
+assert(!r.ok && /没有可测试的模型/.test(r.error || ''), 'schema sentinel is never selected for testing: ' + JSON.stringify(r))
 
 r = await P('create-provider', { route: 'bad/', baseURL: 'https://x' })
 assert(!r.ok && /字母|route/.test(r.error || ''), 'invalid route rejected')
@@ -424,7 +514,6 @@ assert(r.providers.find((x) => x.route === 'flag-gw').disabled === true, 'reinst
     noteK: 1,
   })
   const late = createLateSettings(lateStore)
-  const cleanupsBeforeLate = cleanups.length
   listeners['settings/updated'] = []
   const lateCtx = {
     get: (name) => (name === 'settings' ? late : name === 'llm' ? llm : name === 'credentials' ? creds : undefined),
@@ -432,6 +521,7 @@ assert(r.providers.find((x) => x.route === 'flag-gw').disabled === true, 'reinst
     on: ctx.on,
     effect: ctx.effect,
   }
+  const cleanupsBeforeLate = cleanups.length
   apply(lateCtx)
   // Eager attempt ran against an unregistered section -> must NOT have parked yet.
   const lateDoc = () => lateStore.doc()
@@ -1274,7 +1364,6 @@ assert(r.ok && r.prefs.maxRetries === 0, 'budget restored to the default')
   await drain(baseCall('cap', 'high'))
   seen = llm.effortsSeen.filter((e) => e.provider === 'cap-a')
   assert(seen[0].effort === undefined, 'an incomparable vocabulary yields no effort rather than a guess: ' + seen[0].effort)
-
 
   // --- the clamp must be VISIBLE ------------------------------------------
   // A clamped call SUCCEEDS, so nothing else in the product reveals that the

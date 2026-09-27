@@ -57,6 +57,12 @@ export interface CatalogPrefs {
   url: string
 }
 
+/** Persisted state for the opt-in local endpoint. Its temporary bearer key is
+ * process-memory only and deliberately absent from this shape. */
+export interface LocalGatewayPrefs {
+  enabled: boolean
+}
+
 /** One named smart route: a bundle of targets picked by a strategy. */export interface RouteSpec {
   strategy: RouteStrategy
   targets: RouteTarget[]

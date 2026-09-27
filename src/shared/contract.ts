@@ -55,6 +55,8 @@ export const METHODS: ReadonlyArray<readonly [string, string]> = [
   ['set-retry-prefs', 'setRetryPrefs'],
   ['get-catalog-prefs', 'getCatalogPrefs'],
   ['set-catalog-prefs', 'setCatalogPrefs'],
+  ['get-local-gateway-prefs', 'getLocalGatewayPrefs'],
+  ['set-local-gateway-prefs', 'setLocalGatewayPrefs'],
   ['suggest-reasoning', 'suggestReasoning'],
 ] as const
 

@@ -34,6 +34,20 @@ export const CSS = [
   '.mpro-btnSm{height:25px;padding:0 9px;font-size:11.5px;border-radius:6px}',
   '.mpro-btnWide{flex:1}',
 
+  '.mpro-gatewayBox{margin-top:12px;padding:13px 14px;border:1px dashed var(--dsw-alias-border-l2);border-radius:9px;background:linear-gradient(90deg,var(--dsw-alias-bg-layer-3),transparent);display:flex;flex-direction:column;gap:9px}',
+  '.mpro-gatewayBoxLive{border-style:solid;border-color:var(--dsw-alias-state-success-primary);box-shadow:inset 3px 0 0 var(--dsw-alias-state-success-primary)}',
+  '.mpro-gatewayState{font-family:var(--mpro-monospace);font-size:10.5px;color:var(--dsw-alias-label-tertiary);display:inline-flex;align-items:center;gap:6px}',
+  '.mpro-gatewayLed{width:7px;height:7px;border-radius:50%;background:var(--dsw-alias-label-quaternary);box-shadow:0 0 0 3px var(--dsw-alias-bg-layer-2)}',
+  '.mpro-gatewayStateLive{color:var(--dsw-alias-state-success-label)}',
+  '.mpro-gatewayStateLive .mpro-gatewayLed{background:var(--dsw-alias-state-success-primary);box-shadow:0 0 0 3px var(--dsw-alias-state-success-fill),0 0 9px var(--dsw-alias-state-success-primary)}',
+  '.mpro-gatewayPatch{display:flex;flex-direction:column;gap:10px;padding:10px;border-left:2px solid var(--dsw-alias-border-l2);margin-left:3px}',
+  '.mpro-gatewaySocket{display:flex;align-items:center;gap:10px;min-width:0;padding:8px 10px;border-radius:6px;background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l1)}',
+  '.mpro-gatewaySocketLabel{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--dsw-alias-label-tertiary);flex:none}',
+  '.mpro-gatewaySocket code{font-family:var(--mpro-monospace);font-size:11px;overflow-wrap:anywhere;color:var(--dsw-alias-label-primary)}',
+  '.mpro-gatewayIssued{padding:9px 10px;border-radius:6px;background:var(--dsw-alias-state-warn-fill,rgba(217,119,6,.12));display:flex;flex-direction:column;gap:4px}',
+  '.mpro-gatewayIssued span{font-size:11px;color:var(--dsw-alias-state-warn-label)}',
+  '.mpro-gatewayIssued code{font-family:var(--mpro-monospace);font-size:11px;overflow-wrap:anywhere;user-select:all}',
+
   // ---------- banner ----------
   '.mpro-banner{padding:9px 12px;border-radius:8px;font-size:12px;margin:12px 0;display:flex;gap:8px;align-items:center;line-height:1.45}',
   '.mpro-bannerOk{background:var(--dsw-alias-state-success-fill);color:var(--dsw-alias-state-success-label)}',

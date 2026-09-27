@@ -454,6 +454,12 @@ function RouteListPanel({ t, call, providers }: Props) {
             belongs beside the route list rather than inside one route's editor. */}
         <RetryBudget t={t} call={call} />
 
+        {/* Local agent gateway is also global. Its visible endpoint/key block is
+            deliberately "patch-panel" styled: this is an integration jack, not
+            another route card, and the credential-store secret must read as
+            persistent while remaining masked. */}
+        <LocalGatewaySettings t={t} call={call} />
+
         {/* The catalog toggle sits here for the same reason: it is a global
             preference, not a per-route one. */}
         <CatalogSettings t={t} call={call} />
@@ -538,6 +544,97 @@ function RetryBudget({ t, call }: { t: TFunc; call: CallFn }) {
         <span className="mpro-retryValue">{value === '0' ? t('retryOff') : value}</span>
       </div>
       <p className="mpro-hint">{t('retryHint')}</p>
+    </div>
+  )
+}
+
+/* --------------------------------------------------------------------------
+ * Local agent gateway — opt-in OpenAI-compatible endpoint + persistent secret
+ * ------------------------------------------------------------------------ */
+
+function LocalGatewaySettings({ t, call }: { t: TFunc; call: CallFn }) {
+  const [enabled, setEnabled] = React.useState(false)
+  const [hasKey, setHasKey] = React.useState(false)
+  const [endpoint, setEndpoint] = React.useState('')
+  const [draft, setDraft] = React.useState('')
+  const [issued, setIssued] = React.useState('')
+  const [busy, setBusy] = React.useState(false)
+  const [note, setNote] = React.useState('')
+
+  const absorb = (r: any) => {
+    setEnabled(r?.prefs?.enabled === true)
+    setHasKey(r?.hasTemporaryKey === true)
+    setEndpoint(r?.endpoint || '')
+    if (typeof r?.temporaryKey === 'string') setIssued(r.temporaryKey)
+  }
+
+  React.useEffect(() => {
+    void call('get-local-gateway-prefs').then(absorb).catch(() => {})
+  }, [call])
+
+  const save = async (payload: Record<string, unknown>, okText: string) => {
+    setBusy(true); setNote('')
+    try {
+      const r = await call('set-local-gateway-prefs', payload)
+      absorb(r)
+      setDraft('')
+      setNote(okText)
+    } catch (e) {
+      setNote(String((e as Error)?.message || e))
+    } finally { setBusy(false) }
+  }
+
+  return (
+    <div className={enabled ? 'mpro-gatewayBox mpro-gatewayBoxLive' : 'mpro-gatewayBox'}>
+      <div className="mpro-retryHead">
+        <span className="mpro-fieldLabel">{t('gatewayTitle')}</span>
+        <span className={enabled && hasKey ? 'mpro-gatewayState mpro-gatewayStateLive' : 'mpro-gatewayState'}>
+          <span className="mpro-gatewayLed" />
+          {enabled && hasKey ? t('gatewayLive') : enabled ? t('gatewayNeedsKey') : t('gatewayOff')}
+        </span>
+      </div>
+      <label className="mpro-checkRow">
+        <input
+          type="checkbox"
+          checked={enabled}
+          disabled={busy}
+          onChange={(e) => void save({ enabled: e.target.checked }, e.target.checked ? t('gatewayEnabled') : t('gatewayDisabled'))}
+        />
+        <span>{t('gatewayEnable')}</span>
+      </label>
+      <p className="mpro-hint">{t('gatewayHint')}</p>
+      {enabled && (
+        <div className="mpro-gatewayPatch">
+          <div className="mpro-gatewaySocket">
+            <span className="mpro-gatewaySocketLabel">{t('gatewayEndpoint')}</span>
+            <code>{endpoint}/chat/completions</code>
+          </div>
+          <div className="mpro-field">
+            <span className="mpro-fieldLabel">{t('gatewayTempKey')}</span>
+            <div className="mpro-hdrAdd">
+              <input
+                className="mpro-input mpro-inputMono"
+                type="password"
+                value={draft}
+                placeholder={hasKey ? t('gatewayKeyActive') : t('gatewayKeyPlaceholder')}
+                disabled={busy}
+                onChange={(e) => setDraft(e.target.value)}
+              />
+              <button className="mpro-btn mpro-btnSm" disabled={busy || (!!draft && draft.trim().length < 16)} onClick={() => void save({ temporaryKey: draft }, t('gatewayKeySet'))}>{t('gatewayUseKey')}</button>
+              <button className="mpro-btn mpro-btnSm mpro-btnPrimary" disabled={busy} onClick={() => void save({ generateKey: true }, t('gatewayKeyGenerated'))}>{t('gatewayGenerateKey')}</button>
+              {hasKey && <button className="mpro-btn mpro-btnSm mpro-btnDanger" disabled={busy} onClick={() => void save({ temporaryKey: '' }, t('gatewayKeyCleared'))}>{t('gatewayClearKey')}</button>}
+            </div>
+          </div>
+          {issued && (
+            <div className="mpro-gatewayIssued">
+              <span>{t('gatewayCopyNow')}</span>
+              <code>{issued}</code>
+            </div>
+          )}
+          <p className="mpro-hint">{t('gatewayKeyHint')}</p>
+        </div>
+      )}
+      {note ? <span className="mpro-inlineStatus">{note}</span> : null}
     </div>
   )
 }

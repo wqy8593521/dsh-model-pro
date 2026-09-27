@@ -185,6 +185,29 @@ export const ZH = {
   retrySaved: '已保存并生效。',
   retryNeedsReload: '已保存，重新加载插件后生效。',
 
+  // Local agent gateway
+  gatewayTitle: '本地 Agent 路由出口',
+  gatewayEnable: '允许其他本机 Agent 通过 OpenAI 兼容接口调用这里的模型与智能路由',
+  gatewayHint: '默认关闭。出口复用当前 DSH Web 端口，只接受 Bearer Key；Key 安全保存在 DSH 凭据服务中，重启和卸载重装后仍有效，普通读取不会回显。模型可写“router/路由名”“provider/模型名”，只写路由名时默认走 router。',
+  gatewayEndpoint: '出口',
+  gatewayTempKey: 'Bearer Key',
+  gatewayKeyPlaceholder: '至少 16 个字符，或自动生成',
+  gatewayKeyActive: '已有持久 Key（不会回显）',
+  gatewayUseKey: '保存此 Key',
+  gatewayGenerateKey: '生成并保存 Key',
+  gatewayClearKey: '撤销 Key',
+  gatewayCopyNow: '请立即复制；离开后不会再次回显',
+  gatewayKeyHint: '接口：GET /models 获取可用模型；POST /chat/completions 发起调用，兼容 OpenAI Chat Completions。设置 stream: true 时以 SSE 实时返回增量，并以 [DONE] 结束。关闭出口或撤销 Key 会立即停止接入。',
+  gatewayOff: 'OFF',
+  gatewayLive: 'LIVE · KEY READY',
+  gatewayNeedsKey: 'WAITING FOR KEY',
+  gatewayEnabled: '本地出口已开启，请配置 Bearer Key。',
+  gatewayDisabled: '本地出口已关闭。',
+  gatewayKeySet: 'Key 已安全保存并生效。',
+  gatewayKeyGenerated: 'Key 已生成、安全保存并生效。',
+  gatewayKeyCleared: '持久 Key 已撤销。',
+
+
   // --- 思考等级（reasoningEfforts）---
   save: '保存',
   close: '关闭',
@@ -574,6 +597,29 @@ export const EN = {
   retryHint: 'DSH only retries failure codes a provider marks retryable, and route failures used to normalize to UNKNOWN — never retried. "All targets failed" is now a retryable code and this is its ceiling: 0 keeps the old behaviour (fail once every target has been tried); above 0, each retry re-runs the whole target list with exponential backoff (1s up to 10s).',
   retrySaved: 'Saved and live.',
   retryNeedsReload: 'Saved; applies after the plugin reloads.',
+
+  // Local agent gateway
+  gatewayTitle: 'Local agent route outlet',
+  gatewayEnable: 'Let other local agents call these models and smart routes through an OpenAI-compatible endpoint',
+  gatewayHint: 'Off by default. The outlet shares the current DSH Web port and requires a Bearer key. The key is stored securely by the DSH credentials service, survives restarts and reinstalls, and is never revealed by ordinary reads. Use “router/route”, “provider/model”, or just a route name (defaults to router).',
+  gatewayEndpoint: 'Outlet',
+  gatewayTempKey: 'Bearer key',
+  gatewayKeyPlaceholder: 'At least 16 characters, or generate one',
+  gatewayKeyActive: 'A persistent key is active (never revealed)',
+  gatewayUseKey: 'Save this key',
+  gatewayGenerateKey: 'Generate and save key',
+  gatewayClearKey: 'Revoke key',
+  gatewayCopyNow: 'Copy now; it will not be shown again',
+  gatewayKeyHint: 'Endpoints: GET /models lists available models; POST /chat/completions supports OpenAI Chat Completions. Set stream: true for incremental SSE chunks terminated by [DONE]. Disabling the outlet or revoking the key stops access immediately.',
+  gatewayOff: 'OFF',
+  gatewayLive: 'LIVE · KEY READY',
+  gatewayNeedsKey: 'WAITING FOR KEY',
+  gatewayEnabled: 'Local outlet enabled. Configure a Bearer key.',
+  gatewayDisabled: 'Local outlet disabled.',
+  gatewayKeySet: 'Key securely saved and active.',
+  gatewayKeyGenerated: 'Key generated, securely saved, and active.',
+  gatewayKeyCleared: 'Persistent key revoked.',
+
 
   // --- reasoning levels (reasoningEfforts) ---
   save: 'Save',

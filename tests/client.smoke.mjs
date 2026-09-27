@@ -140,6 +140,7 @@ const testProviders = [
 const uiPrefsState = { showRouteBadge: true }
 const retryPrefsState = { maxRetries: 0 }
 const catalogPrefsState = { enabled: false, url: '' }
+const gatewayPrefsState = { enabled: false }
 const catalogReply = () => ({
   ok: true,
   prefs: { ...catalogPrefsState },
@@ -163,6 +164,8 @@ const businessFor = (method, payload) => {
   if (method === 'setRetryPrefs') { Object.assign(retryPrefsState, (payload && payload.prefs) || {}); return { ok: true, prefs: { ...retryPrefsState }, applied: true } }
   if (method === 'getCatalogPrefs') return catalogReply()
   if (method === 'setCatalogPrefs') { Object.assign(catalogPrefsState, (payload && payload.prefs) || {}); return catalogReply() }
+  if (method === 'getLocalGatewayPrefs') return { ok: true, prefs: { ...gatewayPrefsState }, hasTemporaryKey: false, endpoint: 'http://127.0.0.1:3080/model-pro/v1' }
+  if (method === 'setLocalGatewayPrefs') { if (typeof payload?.enabled === 'boolean') gatewayPrefsState.enabled = payload.enabled; return { ok: true, prefs: { ...gatewayPrefsState }, hasTemporaryKey: !!payload?.generateKey, endpoint: 'http://127.0.0.1:3080/model-pro/v1', ...(payload?.generateKey ? { temporaryKey: 'dsh-local-test-key-123456' } : {}) } }
   // Two entries on purpose: one plain, one whose thinking level the router had
   // to clamp. A clamped call SUCCEEDS, so the effort trace is the only thing in
   // the product that reveals the substitution — both the log column and the
@@ -182,7 +185,7 @@ const remoteMethods = [
   'deleteComposite', 'previewComposite', 'getRouteStats', 'listRequestLogs',
   'clearRequestLogs', 'probeTarget', 'probeAll', 'getUiPrefs', 'setUiPrefs',
   'getRetryPrefs', 'setRetryPrefs',
-  'getCatalogPrefs', 'setCatalogPrefs',
+  'getCatalogPrefs', 'setCatalogPrefs', 'getLocalGatewayPrefs', 'setLocalGatewayPrefs',
 ]
 const remoteHandle = {}
 for (const m of remoteMethods) {
@@ -380,6 +383,8 @@ assert(outR.some((n) => String(n.className).includes('mpro-retryBox')), 'renders
 // The lookup is the plugin's only third-party request, so "off unless asked" is
 // a behavioural guarantee, not a styling detail.
 assert(outR.some((n) => String(n.className).includes('mpro-checkRow')), 'renders the catalog opt-in checkbox')
+assert(outR.some((n) => String(n.className).includes('mpro-gatewayBox')), 'renders the local agent gateway patch panel')
+assert(outR.some((n) => /gatewayOff/i.test(n.text || '')), 'local agent gateway visibly starts OFF')
 {
   const box = outR.find((n) => n.props && n.props.type === 'checkbox' && n.props.checked === false)
   assert(box, 'the catalog toggle starts unchecked (no fetch without consent)')

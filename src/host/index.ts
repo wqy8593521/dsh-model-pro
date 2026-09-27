@@ -23,6 +23,7 @@ import { registerStreamRewrite } from './streamRewrite'
 import { restoreDisabledOnUnload, parkDisabledProviders } from './lifecycle'
 import { initHealthTracker, resetHealthSingleton } from './health'
 import { resetObservabilitySingletons, hydrateObservability, persistStats, setStatsPersistRequester, resetStatsPersistRequester } from './statsStore'
+import { registerLocalGateway, resetLocalGatewayRuntime } from './localGateway'
 
 /** Loader entry id / client bundle id. */
 export const name = PACKAGE
@@ -36,7 +37,7 @@ export const name = PACKAGE
  * re-park of marked providers would silently no-op — leaving disabled-marked
  * providers sitting in `providers`, where llm-pi-ai's resolveProfiles registers
  * them as fully active routes again (the marker means nothing to it). */
-export const inject = ['typert', 'settings', 'llm']
+export const inject = ['typert', 'settings', 'llm', 'webServer']
 
 export function apply(ctx: HostCtx) {
   const c = ctx as any
@@ -45,9 +46,10 @@ export function apply(ctx: HostCtx) {
   new ModelProRuntime(ctx)
   c.effect(() => c.typert.register(TYPERT_MANIFEST), 'dsh-model-pro: typert manifest')
 
-  // Rebind observability singletons to this fiber (fresh on each apply).
+  // Rebind observability/local-gateway runtime state to this fresh fiber.
   resetHealthSingleton()
   resetObservabilitySingletons()
+  resetLocalGatewayRuntime()
   resetStatsPersistRequester()
   initHealthTracker(ctx)
   // Seed the stats recorder + request-log ring from the persisted snapshot so
@@ -91,6 +93,10 @@ export function apply(ctx: HostCtx) {
       return persistStats(ctx, { force: true })
     }, 'dsh-model-pro: stats flush')
   }
+
+  // Register the authenticated local OpenAI-compatible route. It stays inert
+  // (404) unless explicitly enabled and backed by a credentials-service key.
+  registerLocalGateway(ctx)
 
   // Smart routing: expose route combos + composites as models on the synthetic
   // "router" / "composite" routes, forwarding calls to real targets.
