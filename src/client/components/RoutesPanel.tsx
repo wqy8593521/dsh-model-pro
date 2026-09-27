@@ -11,7 +11,8 @@
  * probe-target / probe-all）。 */
 
 import React from '../react'
-import type { ProviderListItem, RouteSpec, RouteTarget, TFunc, CallFn, TargetHealth } from '../../shared/types'
+import type { ProviderListItem, RouteSpec, RouteTarget, TFunc, CallFn, TargetHealth, EffortTrace } from '../../shared/types'
+import { fmt } from '../labels'
 import { LocalFillPanel } from './LocalFillPanel'
 
 interface Props {
@@ -887,6 +888,33 @@ function statsRow(s: StatsShape): { calls: number; successRate: number; avg: num
 
 const LOG_PAGE_SIZES = [20, 50, 100]
 
+/** Render one log entry's thinking-level cell.
+ *
+ * This column exists because a route advertises the UNION of its targets'
+ * levels: selecting `max` is legal as long as ANY target offers it, and the
+ * dispatch clamp then quietly substitutes whatever the target that actually
+ * served the turn does offer. The call succeeds, so nothing else on this page
+ * shows that the answer was produced at a lower level than requested — this
+ * cell is the only place the substitution is visible.
+ *
+ * Three renderings, matching the three states of `EffortTrace`:
+ *   - forwarded as asked   → the level, plain
+ *   - clamped to another   → `max → high`, highlighted
+ *   - clamped to nothing   → `max → 未下发`, highlighted
+ */
+function EffortCell({ t, effort }: { t: TFunc; effort?: EffortTrace }) {
+  if (!effort || !effort.requested) return <td className="mpro-dim">—</td>
+  const { requested, sent } = effort
+  if (sent === requested) return <td className="mpro-logEffort">{requested}</td>
+  const label = sent
+    ? fmt(t('obsEffortClamped'), { requested, sent })
+    : fmt(t('obsEffortDropped'), { requested })
+  const tip = sent
+    ? fmt(t('obsEffortClampedTip'), { requested, sent })
+    : fmt(t('obsEffortDroppedTip'), { requested })
+  return <td className="mpro-logEffort mpro-logEffortClamped" title={tip}>{label}</td>
+}
+
 export function ObservabilityPanel({ t, call }: { t: TFunc; call: CallFn }) {
   const [stats, setStats] = React.useState<{ byRoute: Record<string, StatsShape>; byTarget: Record<string, StatsShape> }>({ byRoute: {}, byTarget: {} })
   const [logs, setLogs] = React.useState<any[]>([])
@@ -1128,6 +1156,7 @@ export function ObservabilityPanel({ t, call }: { t: TFunc; call: CallFn }) {
                       <th>{t('obsRoute')}</th>
                       <th>{t('obsTarget')}</th>
                       <th>{t('obsStatus')}</th>
+                      <th>{t('obsEffort')}</th>
                       <th>{t('obsLatency')}</th>
                       <th>{t('obsIn')}</th>
                       <th>{t('obsOut')}</th>
@@ -1152,13 +1181,14 @@ export function ObservabilityPanel({ t, call }: { t: TFunc; call: CallFn }) {
                             <td className={e.status === 'ok' ? 'mpro-logStatus mpro-logOk' : 'mpro-logStatus mpro-logErr'}>
                               {e.status === 'ok' ? t('obsStateOk') : e.status === 'fallback' ? t('obsStateFallback') : t('obsStateError')}
                             </td>
+                            <EffortCell t={t} effort={e.effort} />
                             <td>{e.latencyMs}ms</td>
                             <td className="mpro-dim">{e.tokens && e.tokens.in != null ? e.tokens.in : '—'}</td>
                             <td className="mpro-dim">{e.tokens && e.tokens.out != null ? e.tokens.out : '—'}</td>
                           </tr>
                           {open && hasDetail ? (
                             <tr className="mpro-logDetailRow">
-                              <td colSpan={8}>
+                              <td colSpan={9}>
                                 <div className="mpro-logDetail">
                                   <div className="mpro-logDetailLabel">{t('logErrorDetail')}</div>
                                   <div className="mpro-errorBlock">{e.error}</div>

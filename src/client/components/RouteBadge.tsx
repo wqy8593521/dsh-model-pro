@@ -15,6 +15,7 @@
 
 import React from '../react'
 import type { CallFn } from '../../shared/types'
+import { fmt } from '../labels'
 import { COMPOSITE_SEP, CLIENT_NS } from '../../shared/constants'
 
 /** One aggregated serving target for a turn. */
@@ -23,6 +24,12 @@ interface ServingTarget {
   model: string
   /** True when any log entry shows this target was NOT the first attempt. */
   fellBack: boolean
+  /** The clamp the router applied for this target, when the level it was sent
+   * differs from the one requested. Surfaced here because the substitution is
+   * otherwise invisible: the route advertises the UNION of its targets' levels,
+   * so a turn can succeed at a lower level than the selector shows. First
+   * observed clamp wins — a turn's tool-loop calls all carry the same request. */
+  clamped?: { requested: string; sent?: string }
 }
 
 interface SelectionLogEntry {
@@ -32,6 +39,7 @@ interface SelectionLogEntry {
   target: { provider: string; model: string }
   status: string
   tryIndex?: number
+  effort?: { requested?: string; sent?: string }
 }
 
 // --- tiny caches so a page of historical turns costs at most one RPC --------
@@ -213,6 +221,12 @@ function targetsInWindow(entries: SelectionLogEntry[], win: { from: number; to: 
       t.fellBack = true
       fallbacks += 1
     }
+    // Record the clamp only when the level actually changed; an effort forwarded
+    // as requested is the normal case and deserves no chip.
+    if (t.clamped === undefined && e.effort && typeof e.effort.requested === 'string' && e.effort.requested) {
+      const sent = typeof e.effort.sent === 'string' && e.effort.sent ? e.effort.sent : undefined
+      if (sent !== e.effort.requested) t.clamped = { requested: e.effort.requested, ...(sent ? { sent } : {}) }
+    }
   }
   return { targets: order.map((k) => byKey.get(k) as ServingTarget), routes, fallbacks }
 }
@@ -319,6 +333,23 @@ export function RouteBadgeView(props: any & { matched: { from: number; to: numbe
         </span>
       ))}
       {anyFallback ? <span className="mpro-badgeFbText">{t('badgeFallback')}</span> : null}
+      {/* One chip per distinct clamp: the turn ran at a level other than the one
+          selected, which nothing else in the chat view reveals. */}
+      {state.targets.map((x) => (
+        x.clamped ? (
+          <span
+            key={`eff\u0000${x.provider}\u0000${x.model}`}
+            className="mpro-badgeChip mpro-badgeChipEffort"
+            title={x.clamped.sent
+              ? fmt(t('obsEffortClampedTip'), { requested: x.clamped.requested, sent: x.clamped.sent })
+              : fmt(t('obsEffortDroppedTip'), { requested: x.clamped.requested })}
+          >
+            {x.clamped.sent
+              ? fmt(t('badgeEffort'), { requested: x.clamped.requested, sent: x.clamped.sent })
+              : fmt(t('badgeEffortNone'), { requested: x.clamped.requested })}
+          </span>
+        ) : null
+      ))}
     </div>
   )
 }

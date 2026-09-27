@@ -105,6 +105,28 @@ export interface RouteStats {
   tokensOut: number
 }
 
+/** What a routed call ASKED for versus what the chosen target was actually
+ * sent, after `router/reasoning.effortForTarget` clamped it.
+ *
+ * Recorded because the clamp is otherwise invisible. A route advertises the
+ * UNION of its targets' efforts, so selecting `max` is legal even when the
+ * target that ends up serving the turn only offers `medium` — the request
+ * succeeds, quietly, at a lower level than was asked for. Without this field
+ * the downgrade appears nowhere (not the log, not the turn badge) and the only
+ * symptom is a weaker answer.
+ *
+ * Three states, all distinct:
+ *   - absent          : the caller requested no effort
+ *   - `sent` present  : forwarded as-is when equal to `requested`, DOWNGRADED
+ *                       (or upgraded) when different
+ *   - `sent` absent   : the clamp resolved to "send none" — the target declares
+ *                       no reasoning, or a vocabulary that cannot be compared.
+ *                       Not the same as a downgrade, and must read differently. */
+export interface EffortTrace {
+  requested: string
+  sent?: string
+}
+
 /** One persisted request-log entry. */
 export interface RequestLogEntry {
   ts: number
@@ -116,6 +138,10 @@ export interface RequestLogEntry {
   latencyMs: number
   tokens: { in?: number; out?: number }
   error?: string
+  /** Requested vs actually-forwarded thinking level (see {@link EffortTrace}).
+   * Optional: entries persisted before this field existed simply lack it, and a
+   * call that requested no effort never carries it. */
+  effort?: EffortTrace
 }
 
 /** AES-256-GCM encrypted secret snapshot stored in a provider profile.

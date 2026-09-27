@@ -14,7 +14,7 @@
 
 import type { HostCtx } from './utils'
 import { readRoutesRootKey, writeRoutesRootKey } from './utils'
-import type { RouteStats, RequestLogEntry, TargetHealth } from '../shared/types'
+import type { RouteStats, RequestLogEntry, TargetHealth, EffortTrace } from '../shared/types'
 
 /** Bounded request-log ring capacity (in memory). Sized generously so a long
  * conversation — where a single agent turn can fire dozens of tool-loop LLM
@@ -100,6 +100,15 @@ function normalizeLogEntry(raw: unknown): RequestLogEntry | null {
   }
   if (typeof r.sessionId === 'string') entry.sessionId = r.sessionId
   if (typeof r.error === 'string') entry.error = r.error
+  if (r.effort && typeof r.effort === 'object') {
+    const e = r.effort as Record<string, unknown>
+    if (typeof e.requested === 'string') {
+      entry.effort = {
+        requested: e.requested,
+        ...(typeof e.sent === 'string' ? { sent: e.sent as string } : {}),
+      }
+    }
+  }
   return entry
 }
 
@@ -174,6 +183,9 @@ export interface StatsRecorder {
     /** Explicit log status override — e.g. 'fallback' for a call that only
      * succeeded on tryIndex > 1. Defaults to ok ? 'ok' : 'error'. */
     status?: RequestLogEntry['status']
+    /** Requested vs actually-forwarded thinking level (see EffortTrace in
+     * shared/types). Optional: present only when the caller requested an effort. */
+    effort?: EffortTrace
   }): void
   byRoute(): Record<string, RouteStats>
   byTarget(): Record<string, RouteStats>
@@ -196,7 +208,7 @@ export function createStatsRecorder(): StatsRecorder {
     m[k] = accumulateStats(cur, opts)
   }
   return {
-    record({ route, provider, model, ok, latencyMs, tokensIn, tokensOut, tryIndex, sessionId, error, status }) {
+    record({ route, provider, model, ok, latencyMs, tokensIn, tokensOut, tryIndex, sessionId, error, status, effort }) {
       bump(byRoute, route, { ok, latencyMs, tokensIn, tokensOut })
       bump(byTarget, `${provider}\u0000${model}`, { ok, latencyMs, tokensIn, tokensOut })
       getLogRing().push({
@@ -212,6 +224,7 @@ export function createStatsRecorder(): StatsRecorder {
           ...(typeof tokensOut === 'number' ? { out: tokensOut } : {}),
         },
         ...(error ? { error } : {}),
+        ...(effort ? { effort } : {}),
       })
       dirty = true
       requestStatsPersist?.()

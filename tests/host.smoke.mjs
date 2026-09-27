@@ -1275,6 +1275,111 @@ assert(r.ok && r.prefs.maxRetries === 0, 'budget restored to the default')
   seen = llm.effortsSeen.filter((e) => e.provider === 'cap-a')
   assert(seen[0].effort === undefined, 'an incomparable vocabulary yields no effort rather than a guess: ' + seen[0].effort)
 
+
+  // --- the clamp must be VISIBLE ------------------------------------------
+  // A clamped call SUCCEEDS, so nothing else in the product reveals that the
+  // turn ran at a level other than the one the user picked: the route
+  // advertises the union, the request is valid, the answer arrives. The
+  // request-log trace is the only evidence, which makes these assertions the
+  // regression guard for "选 max 实拿 medium 且看不出来".
+  const lastLog = async () => {
+    const res = await P('list-request-logs', { limit: 1 })
+    return res.entries[res.entries.length - 1]
+  }
+
+  // Forwarded as asked: requested === sent, so the UI renders it plainly.
+  await resolveOver('trace1', { reasoning: eff('low', 'high') }, { reasoning: eff('low', 'high') })
+  await drain(baseCall('cap', 'high'))
+  let entry = await lastLog()
+  assert(entry.effort && entry.effort.requested === 'high' && entry.effort.sent === 'high',
+    'an unclamped effort still records requested === sent: ' + JSON.stringify(entry.effort))
+
+  // Clamped DOWN: this is the case the whole field exists for.
+  await resolveOver('trace2', { reasoning: eff('low', 'medium') }, { reasoning: eff('max') })
+  await drain(baseCall('cap', 'max'))
+  entry = await lastLog()
+  assert(entry.effort && entry.effort.requested === 'max' && entry.effort.sent === 'medium',
+    'a downgrade records BOTH levels so the UI can show max → medium: ' + JSON.stringify(entry.effort))
+  assert(entry.target.provider === 'cap-a', 'the trace belongs to the target that actually served it: ' + entry.target.provider)
+
+  // Clamped to NOTHING is a different outcome from a downgrade — `sent` is
+  // absent rather than equal to some level, and the UI must read it as "未下发".
+  await resolveOver('trace3', {}, { reasoning: eff('high') })
+  await drain(baseCall('cap', 'high'))
+  entry = await lastLog()
+  assert(entry.effort && entry.effort.requested === 'high' && entry.effort.sent === undefined,
+    'a dropped effort records requested with NO sent: ' + JSON.stringify(entry.effort))
+
+  // No effort requested → no trace at all, so the column stays empty rather
+  // than inventing a level the caller never asked for.
+  await drain(baseCall('cap', undefined))
+  entry = await lastLog()
+  assert(entry.effort === undefined, 'a call that requested no effort carries no trace: ' + JSON.stringify(entry.effort))
+
+  // --- an UNREADABLE target must not be reported as "level unsupported" ----
+  // `effortForTarget` passes the effort through unchanged when a target's
+  // metadata cannot be read (it may well support it), so the target's own
+  // prepareCall rejects it. Echoing that message verbatim blamed the level and
+  // sent users hunting for a routing bug; the report must name the real cause.
+  await resolveOver('trace4', { reasoning: eff('low', 'high', 'max') }, 'throw')
+  llm.failProviders.add('cap-a')
+  let effErr
+  try {
+    await drain(baseCall('cap', 'max'))
+  } catch (e) {
+    effErr = e
+  }
+  llm.failProviders.delete('cap-a')
+  assert(effErr, 'a route whose only surviving target rejects the effort still fails')
+  assert(/档位列表缺失或与上游不一致/.test(String(effErr.message)),
+    'the failure names the missing level DECLARATION, not the level: ' + String(effErr && effErr.message))
+  assert(/模型 → 思考等级/.test(String(effErr.message)), 'the failure points at where to fix it: ' + String(effErr && effErr.message))
+  entry = await lastLog()
+  assert(entry.effort && entry.effort.requested === 'max' && entry.effort.sent === 'max',
+    'the rejected attempt is logged WITH the effort it forwarded: ' + JSON.stringify(entry.effort))
+  // The rejection proves the cached level list is wrong, so it must be dropped:
+  // keeping it would repeat the same failure for the rest of the TTL. With the
+  // entry gone and the lookup now succeeding, the same call clamps normally.
+  llm.modelInfo.set(KEY('cap-b', 'trace4'), { reasoning: eff('low', 'medium') })
+  llm.failProviders.add('cap-a')
+  llm.effortsSeen.length = 0
+  await drain(baseCall('cap', 'max'))
+  llm.failProviders.delete('cap-a')
+  seen = llm.effortsSeen.filter((e) => e.provider === 'cap-b')
+  assert(seen.length === 1 && seen[0].effort === 'medium',
+    'after a rejection the metadata is re-read and the effort clamps: ' + JSON.stringify(llm.effortsSeen))
+
+  // A gateway that rejects the effort PARAMETER answers over the wire, so pi-ai
+  // delivers it as a terminal error finish rather than a throw — the same cause
+  // arriving through the other door. It must get the same explanation, and it
+  // must NOT count against the target's health: refusing a level says nothing
+  // about whether the target is reachable.
+  // cap-b DECLARES max (so its prepareCall accepts it) and the upstream refuses
+  // anyway — the "declaration disagrees with the gateway" half of the cause.
+  await resolveOver('trace5', { reasoning: eff('low', 'high', 'max') }, { reasoning: eff('low', 'high', 'max') })
+  llm.scriptedStreams.set('cap-b', async function* () {
+    yield { type: 'usage', usage: { inputTokens: 1, outputTokens: 0 } }
+    yield { type: 'finish', reason: { kind: 'error', failure: { message: 'Unsupported reasoning effort "max" for this model', code: 'BAD_REQUEST' } } }
+  })
+  llm.failProviders.add('cap-a')
+  let wireErr
+  try {
+    await drain(baseCall('cap', 'max'))
+  } catch (e) {
+    wireErr = e
+  }
+  llm.failProviders.delete('cap-a')
+  llm.scriptedStreams.delete('cap-b')
+  assert(wireErr && /档位列表缺失或与上游不一致/.test(String(wireErr.message)),
+    'a WIRE-level effort rejection gets the same explanation as a thrown one: ' + String(wireErr && wireErr.message))
+  // Asserted on the FAIL COUNTER, not on `status`: a first markDown against a
+  // never-seen target deliberately leaves it `up` (one cold failure shouldn't
+  // park it), so status alone cannot tell "health untouched" from "charged once".
+  const wireHealth = (await P('get-route-stats')).health || {}
+  const capBHealth = wireHealth[`cap-b\u0000trace5`]
+  assert(!capBHealth || capBHealth.consecutiveFails === 0,
+    'an effort rejection is never charged to health (it says nothing about reachability): ' + JSON.stringify(capBHealth))
+
   await P('delete-route', { alias: 'cap' })
   await P('delete-provider', { route: 'cap-a' })
   await P('delete-provider', { route: 'cap-b' })

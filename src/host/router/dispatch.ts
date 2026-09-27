@@ -17,14 +17,14 @@
 
 import type { HostCtx } from '../utils'
 import { wireModelOf } from '../utils'
-import type { RouteSpec, RouteTarget } from '../../shared/types'
+import type { EffortTrace, RouteSpec, RouteTarget } from '../../shared/types'
 import { getHealthTracker } from '../health'
 import { getStatsRecorder } from '../statsStore'
 import { errorText } from '../errorText'
 import { orderTargets } from './strategy'
 import { buildCallConfig, buildTargetOptions } from './plan'
-import { effortForTarget } from './reasoning'
-import { routeExhausted } from './failure'
+import { effortForTarget, forgetTargetInfo } from './reasoning'
+import { routeExhausted, isUnsupportedEffortError, looksLikeUnsupportedEffortText } from './failure'
 import {
   ATTEMPT_TIMEOUT, firstErrorFrom, isFinishChunk, isProgressChunk,
   nextWithDeadline, tokensFrom, tryReturn,
@@ -114,13 +114,41 @@ export async function* dispatchRoute(
     tryIndex += 1
     const wire = wireModelOf(st(), target.provider, target.model)
     const attemptStart = Date.now()
+    // What this attempt asked for vs what the target was actually sent. Declared
+    // OUTSIDE the try so the failure paths below — including the one an
+    // UNSUPPORTED_REASONING_EFFORT rejection lands in — record it too. Assigned
+    // right after the clamp; a caller that requested no effort leaves it
+    // undefined and nothing is logged.
+    let effortLog: EffortTrace | undefined
+    /** Rewrite a target's own effort-rejection message into one that names the
+     * real cause.
+     *
+     * The clamp exists precisely to prevent this rejection, so reaching it means
+     * the target's DECLARED level list is unavailable (metadata unreadable) or
+     * disagrees with what the upstream really accepts. The provider's wording
+     * blames the level, which sends the user hunting for a routing bug.
+     *
+     * Dropping the memoized lookup is part of the same fix: when the entry was a
+     * cached failure, the next attempt re-reads it instead of repeating this for
+     * the rest of the negative TTL. */
+    const explainEffortRejection = (): string => {
+      forgetTargetInfo(ctx, target)
+      const asked = effortLog?.requested
+      const sent = effortLog?.sent
+      const what = asked && sent && sent !== asked ? `「${sent}」（请求「${asked}」）` : `「${sent || asked || '?'}」`
+      return `目标 ${target.provider}/${wire} 拒绝思考档位${what}：该目标声明的档位列表缺失或与上游不一致，未能预先适配。请在「模型 → 思考等级」为该模型声明档位，再用「测试连接」核对取值。`
+    }
     try {
       // The requested effort is valid for the ROUTE (the union of its targets'
       // efforts), but this one target may not offer it. Clamping before
       // `prepareCall` is what keeps that from throwing
-      // UNSUPPORTED_REASONING_EFFORT here — which this loop cannot distinguish
-      // from a dead provider, and would therefore charge to the target's health.
+      // UNSUPPORTED_REASONING_EFFORT here, which would burn a fallback slot on
+      // a configuration mismatch. When the clamp changes the level, the trace
+      // below is the ONLY record that it happened.
       const effort = await effortForTarget(ctx, llm, target, options.reasoningEffort, options.signal)
+      if (typeof options.reasoningEffort === 'string' && options.reasoningEffort) {
+        effortLog = { requested: options.reasoningEffort, ...(effort ? { sent: effort } : {}) }
+      }
       const callConfig = buildCallConfig(target, wire, { ...options, reasoningEffort: effort })
       const prepared = await llm.prepareCall(callConfig, options.signal)
       // The resolver may clamp/normalize the config (e.g. a model maxTokens
@@ -166,6 +194,7 @@ export async function* dispatchRoute(
             route: routeName, provider: target.provider, model: wire, ok: false,
             latencyMs: Date.now() - attemptStart, tryIndex, sessionId: sid,
             error: `目标 ${target.provider}/${wire} ${why}`,
+            ...(effortLog ? { effort: effortLog } : {}),
           })
           lastErr = `目标 ${target.provider}/${wire}: ${why}`
           break
@@ -187,6 +216,7 @@ export async function* dispatchRoute(
             route: routeName, provider: target.provider, model: wire, ok: false,
             latencyMs: Date.now() - attemptStart, tryIndex, sessionId: sid,
             error: `目标 ${target.provider}/${wire} 空响应`,
+            ...(effortLog ? { effort: effortLog } : {}),
           })
           lastErr = `目标 ${target.provider}/${wire}: 空响应`
           continue
@@ -199,13 +229,20 @@ export async function* dispatchRoute(
           // does not match — they fall through to the commit path below and
           // propagate verbatim, so a cancel is never retried elsewhere.)
           await tryReturn(iterator)
-          health().markDown(target.provider, target.model, errText)
+          // A gateway that rejects the effort PARAMETER answers over the wire,
+          // so it arrives here as a terminal error rather than a throw. Same
+          // cause, same explanation — and health is left alone, because an
+          // unaccepted level says nothing about whether the target is reachable.
+          const effortRejected = effortLog !== undefined && looksLikeUnsupportedEffortText(errText)
+          if (!effortRejected) health().markDown(target.provider, target.model, errText)
+          const why = effortRejected ? explainEffortRejection() : `目标 ${target.provider}/${wire}: ${errText}`
           stats().record({
             route: routeName, provider: target.provider, model: wire, ok: false,
             latencyMs: Date.now() - attemptStart, tryIndex, sessionId: sid,
-            error: `目标 ${target.provider}/${wire}: ${errText}`,
+            error: why,
+            ...(effortLog ? { effort: effortLog } : {}),
           })
-          lastErr = `目标 ${target.provider}/${wire}: ${errText}`
+          lastErr = why
           continue
         }
         // A clean stop/max-tokens/tool-calls finish with no content at all:
@@ -231,6 +268,7 @@ export async function* dispatchRoute(
           route: routeName, provider: target.provider, model: wire, ok: true,
           latencyMs: Date.now() - t0, tokensIn: tokens.in, tokensOut: tokens.out,
           tryIndex, sessionId: sid, status: tryIndex > 1 ? 'fallback' : 'ok',
+          ...(effortLog ? { effort: effortLog } : {}),
         })
         yield terminal
         return
@@ -254,6 +292,7 @@ export async function* dispatchRoute(
             route: routeName, provider: target.provider, model: wire, ok: false,
             latencyMs: Date.now() - t0, tryIndex, sessionId: sid,
             error: `传输中断: ${transportError}`,
+            ...(effortLog ? { effort: effortLog } : {}),
           })
           throw new Error(`目标 ${target.provider}/${wire} 传输中断: ${transportError}`)
         }
@@ -270,6 +309,7 @@ export async function* dispatchRoute(
               latencyMs: Date.now() - t0, tokensIn: tokens.in, tokensOut: tokens.out,
               tryIndex, sessionId: sid,
               error: `目标 ${target.provider}/${wire} 中途返回错误: ${errText}`,
+              ...(effortLog ? { effort: effortLog } : {}),
             })
           } else {
             stats().record({
@@ -277,6 +317,7 @@ export async function* dispatchRoute(
               latencyMs: Date.now() - t0, tokensIn: tokens.in, tokensOut: tokens.out,
               tryIndex, sessionId: sid, status: tryIndex > 1 ? 'fallback' : 'ok',
               ...(aborted ? { error: '已中止' } : {}),
+              ...(effortLog ? { effort: effortLog } : {}),
             })
           }
           return
@@ -293,12 +334,16 @@ export async function* dispatchRoute(
       // ends the whole route instead of moving on.
       if (options.signal?.aborted) return
       const raw = errorText(error)
+      const why = isUnsupportedEffortError(error)
+        ? explainEffortRejection()
+        : `目标 ${target.provider}/${wire}: ${raw}`
       stats().record({
         route: routeName, provider: target.provider, model: wire, ok: false,
         latencyMs: Date.now() - t0, tryIndex, sessionId: sid,
-        error: `目标 ${target.provider}/${wire}: ${raw}`,
+        error: why,
+        ...(effortLog ? { effort: effortLog } : {}),
       })
-      lastErr = `目标 ${target.provider}/${wire}: ${raw}`
+      lastErr = why
     }
   }
 

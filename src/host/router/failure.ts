@@ -5,7 +5,7 @@
  * at all, and getting one property wrong silently downgrades it to unretryable.
  */
 
-import { ROUTE_EXHAUSTED_CODE } from '../../shared/constants'
+import { ROUTE_EXHAUSTED_CODE, UNSUPPORTED_EFFORT_CODE } from '../../shared/constants'
 
 /** Build the error thrown when every eligible target has failed.
  *
@@ -30,4 +30,39 @@ export function routeExhausted(message: string): Error {
     },
   })
   return error
+}
+
+/** Wording that identifies a thinking-level rejection in prose.
+ *
+ * Needed alongside the code check because the two ways this failure reaches the
+ * router carry different amounts of structure: DSH's own pre-flight validation
+ * throws with the code attached, while a gateway that rejects the parameter
+ * itself comes back as an HTTP error that pi-ai turns into a terminal error
+ * `finish` — a message and nothing else. */
+const EFFORT_MESSAGE_RE = /reasoning[\s_-]?effort|thinking[\s_-]?level|思考档位|思考等级/i
+
+/** True when an error MESSAGE reads as a thinking-level rejection.
+ *
+ * Callers must also know that an effort was actually forwarded: the wording
+ * alone cannot separate "we sent a level this target refused" from a provider
+ * mentioning efforts for some unrelated reason. */
+export function looksLikeUnsupportedEffortText(text: unknown): boolean {
+  return typeof text === 'string' && EFFORT_MESSAGE_RE.test(text)
+}
+
+/**
+ * True when a target rejected the call because of the reasoning effort.
+ *
+ * Checked on the error's own `code`, on its `failure.code` snapshot (the shape
+ * `normalizeLlmFailure` produces), and finally on the message — the code is
+ * attached by the DSH runtime, but a raw gateway error only says it in prose,
+ * and treating this as a generic dispatch failure is what made the router
+ * forward the misleading "does not support reasoning effort" report verbatim.
+ */
+export function isUnsupportedEffortError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false
+  const e = error as { code?: unknown; failure?: { code?: unknown }; message?: unknown }
+  if (e.code === UNSUPPORTED_EFFORT_CODE) return true
+  if (e.failure && typeof e.failure === 'object' && e.failure.code === UNSUPPORTED_EFFORT_CODE) return true
+  return looksLikeUnsupportedEffortText(e.message)
 }

@@ -262,6 +262,11 @@ export const CSS = [
   '.mpro-logStatus{font-weight:600}',
   '.mpro-logOk{color:var(--dsw-alias-state-success-primary)}',
   '.mpro-logErr{color:var(--dsw-alias-state-error-primary)}',
+  // Thinking-level cell. A CLAMPED level is a successful call that silently ran
+  // at a level other than the one requested, so it needs to stand out from
+  // ordinary text without reading as an error.
+  '.mpro-logEffort{font-family:var(--mpro-monospace);font-size:11px;white-space:nowrap}',
+  '.mpro-logEffortClamped{color:var(--dsw-alias-state-warning-primary,#b45309);font-weight:600;cursor:help}',
   '.mpro-tblRow{display:grid;gap:8px;align-items:center;padding:7px 0;border-bottom:1px solid var(--dsw-alias-border-l1);font-size:12px}',
   '.mpro-tblRow:last-child{border-bottom:none}',
   // request-log toolbar + pagination + expandable error rows
@@ -301,6 +306,9 @@ export const CSS = [
   '.mpro-badgeChipRoute{border-style:dashed;color:var(--dsw-alias-brand-primary)}',
   '.mpro-badgeFb{color:var(--dsw-alias-state-success-primary);font-weight:600}',
   '.mpro-badgeFbText{font-size:10.5px;color:var(--dsw-alias-state-success-primary)}',
+  // Thinking-level substitution chip: a successful turn that ran at a level
+  // other than the requested one. Warning-toned, not error-toned.
+  '.mpro-badgeChipEffort{font-family:var(--mpro-monospace);color:var(--dsw-alias-state-warning-primary,#b45309);border-color:var(--dsw-alias-state-warning-primary,#b45309);cursor:help}',
 
   // ---------- responsive & motion ----------
   '@media(max-width:640px){.mpro-grid2,.mpro-overviewGrid,.mpro-testRow{grid-template-columns:1fr}.mpro-hdrRow{grid-template-columns:120px 1fr 28px}.mpro-pc{flex-wrap:wrap}.mpro-pcActions{width:100%;justify-content:flex-start}}',

@@ -26,10 +26,11 @@
  * VIRTUAL model (the union), then the router forwards to one real target whose
  * own `prepareCall` validates again — against that target's actual list. An
  * effort the union offers but this target does not throws
- * `UNSUPPORTED_REASONING_EFFORT` there, and the dispatch loop cannot tell that
- * apart from a dead provider: it would mark a healthy target down and burn a
- * fallback slot on a configuration mismatch. Clamping to the nearest level the
- * target does offer is what makes the union safe to advertise.
+ * `UNSUPPORTED_REASONING_EFFORT` there, which costs a fallback slot on what is
+ * purely a configuration mismatch (the dispatch loop reports it as an error but
+ * deliberately does NOT mark the target down — an unaccepted level says nothing
+ * about reachability). Clamping to the nearest level the target does offer is
+ * what makes the union safe to advertise.
  */
 
 import type { HostCtx } from '../utils'
@@ -66,17 +67,28 @@ interface TargetInfo {
  * TTL is checked lazily against `Date.now()` rather than scheduled: the Host
  * sandbox does not reliably provide timers (see `handlers/test.ts`), and a lazy
  * check needs none.
+ *
+ * FAILURES expire far sooner than successes. A failed lookup still has to be
+ * cached — otherwise a dead target is re-queried on every render, turning it into
+ * a per-keystroke stall — but a null entry is also what makes
+ * `effortForTarget` pass the requested effort through UNCLAMPED, so a momentary
+ * blip would otherwise keep rejecting a legitimate effort for the full success
+ * TTL. Seconds is long enough to absorb a render burst, short enough that the
+ * next turn re-reads.
  */
 const TTL_MS = 30_000
+const FAILURE_TTL_MS = 5_000
 const cache = new Map<string, { at: number; info: TargetInfo | null }>()
 
 const keyOf = (provider: string, model: string) => `${provider}\u0000${model}`
 
+const ttlFor = (info: TargetInfo | null) => (info === null ? FAILURE_TTL_MS : TTL_MS)
+
 /** Resolve one real target's metadata, memoized.
  *
- * A failure is cached as `null` for the same TTL, on purpose: a broken or
- * unreachable target would otherwise be re-queried on every render, turning a
- * dead provider into a per-keystroke stall. */
+ * A failure is cached as `null`, but only for {@link FAILURE_TTL_MS} — long
+ * enough to stop a render burst from re-querying a dead target, short enough
+ * that it does not keep an effort unclamped for half a minute. */
 async function targetInfo(
   ctx: HostCtx,
   llm: LlmLike,
@@ -87,7 +99,7 @@ async function targetInfo(
   const key = keyOf(target.provider, wire)
   const hit = cache.get(key)
   const now = Date.now()
-  if (hit && now - hit.at <= TTL_MS) return hit.info
+  if (hit && now - hit.at <= ttlFor(hit.info)) return hit.info
   let info: TargetInfo | null = null
   try {
     info = (await llm.resolveModelInfo(target.provider, wire, signal)) as TargetInfo
@@ -96,6 +108,16 @@ async function targetInfo(
   }
   cache.set(key, { at: now, info })
   return info
+}
+
+/** Drop one target's memoized lookup.
+ *
+ * Called when a target REJECTED a forwarded effort: that proves the level list
+ * this cache holds for it is wrong or missing, so keeping the entry would repeat
+ * the same rejection for the rest of its TTL. */
+export function forgetTargetInfo(ctx: HostCtx, target: RouteTarget): void {
+  const wire = wireModelOf(ctx.get('settings'), target.provider, target.model)
+  cache.delete(keyOf(target.provider, wire))
 }
 
 /** Forget every memoized lookup. Called when a fresh adapter generation

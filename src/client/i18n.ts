@@ -306,6 +306,14 @@ export const ZH = {
   obsLatency: '耗时',
   obsIn: '入',
   obsOut: '出',
+  obsEffort: '思考档位',
+  /** Shown when the router clamped the requested level down/up for the target
+   * that actually served the call — the route advertises the UNION of its
+   * targets' levels, so this is the only place the substitution is visible. */
+  obsEffortClamped: '{requested} → {sent}',
+  obsEffortDropped: '{requested} → 未下发',
+  obsEffortClampedTip: '路由请求「{requested}」，但该目标只支持到「{sent}」，已自动降档。路由对外声明的是所有目标档位的并集。',
+  obsEffortDroppedTip: '路由请求「{requested}」，但该目标未声明思考档位（或使用无法比较的档位名），本次未下发任何档位。',
   obsStateOk: 'ok',
   obsStateError: 'error',
   obsStateFallback: 'fallback',
@@ -348,6 +356,11 @@ export const ZH = {
   badgeRoutePrefix: '路由',
   badgeFallback: '已无感切换',
   badgeFallbackTitle: '该目标不是首选：前面的目标不可达时路由自动切换到了它',
+  /** Shown on the turn tail when the router had to substitute the thinking
+   * level: the selector still shows what was asked for, so without this the
+   * downgrade is invisible in the conversation. */
+  badgeEffort: '{requested}→{sent}',
+  badgeEffortNone: '{requested}→无',
   uiShowBadge: '对话下方显示实际提供商',
   uiShowBadgeHint:
     '开启后，每个回合完成时会在其下方显示智能路由 / 组合提供商实际选中并服务该回合的目标（provider/model），发生自动切换时会标注「已无感切换」。',
@@ -683,6 +696,11 @@ export const EN = {
   obsLatency: 'Latency',
   obsIn: 'In',
   obsOut: 'Out',
+  obsEffort: 'Thinking',
+  obsEffortClamped: '{requested} → {sent}',
+  obsEffortDropped: '{requested} → none',
+  obsEffortClampedTip: 'The route asked for "{requested}", but this target only offers up to "{sent}", so it was clamped. A route advertises the UNION of its targets\' levels.',
+  obsEffortDroppedTip: 'The route asked for "{requested}", but this target declares no thinking levels (or an incomparable vocabulary), so none was sent.',
   obsStateOk: 'ok',
   obsStateError: 'error',
   obsStateFallback: 'fallback',
@@ -725,6 +743,8 @@ export const EN = {
   badgeRoutePrefix: 'Route',
   badgeFallback: 'seamless failover',
   badgeFallbackTitle: 'This target was not first: routing switched here automatically after an earlier target failed',
+  badgeEffort: '{requested}→{sent}',
+  badgeEffortNone: '{requested}→none',
   uiShowBadge: 'Show serving provider under turns',
   uiShowBadgeHint:
     'When on, each completed turn shows which provider/model the smart route or composite actually served it with; automatic failovers are marked "seamless failover".',

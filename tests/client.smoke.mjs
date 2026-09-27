@@ -163,7 +163,14 @@ const businessFor = (method, payload) => {
   if (method === 'setRetryPrefs') { Object.assign(retryPrefsState, (payload && payload.prefs) || {}); return { ok: true, prefs: { ...retryPrefsState }, applied: true } }
   if (method === 'getCatalogPrefs') return catalogReply()
   if (method === 'setCatalogPrefs') { Object.assign(catalogPrefsState, (payload && payload.prefs) || {}); return catalogReply() }
-  if (method === 'listRequestLogs') return { ok: true, entries: [{ ts: 1700000000000, sessionId: 'sess-x', route: 'auto', target: { provider: 'deepseek', model: 'deepseek-chat' }, status: 'ok', tryIndex: 1, latencyMs: 400, tokens: { in: 100, out: 200 } }] }
+  // Two entries on purpose: one plain, one whose thinking level the router had
+  // to clamp. A clamped call SUCCEEDS, so the effort trace is the only thing in
+  // the product that reveals the substitution — both the log column and the
+  // conversation badge are asserted against this second entry.
+  if (method === 'listRequestLogs') return { ok: true, entries: [
+    { ts: 1700000000000, sessionId: 'sess-x', route: 'auto', target: { provider: 'deepseek', model: 'deepseek-chat' }, status: 'ok', tryIndex: 1, latencyMs: 400, tokens: { in: 100, out: 200 } },
+    { ts: 1700000000500, sessionId: 'sess-x', route: 'auto', target: { provider: 'deepseek', model: 'deepseek-chat' }, status: 'ok', tryIndex: 1, latencyMs: 410, tokens: { in: 10, out: 20 }, effort: { requested: 'max', sent: 'medium' } },
+  ] }
   return { ok: true }
 }
 
@@ -183,6 +190,15 @@ for (const m of remoteMethods) {
 }
 
 const structures = []
+const localeOverrides = {
+  badgeRoutePrefix: '路由',
+  obsEffortClamped: '{requested} → {sent}',
+  obsEffortDropped: '{requested} → 未下发',
+  obsEffortClampedTip: '路由请求「{requested}」，但该目标只支持到「{sent}」，已自动降档。',
+  obsEffortDroppedTip: '路由请求「{requested}」，但该目标未声明思考档位，本次未下发任何档位。',
+  badgeEffort: '{requested}→{sent}',
+  badgeEffortNone: '{requested}→无',
+}
 const fake = new FakeReact()
 const slotsByName = new Map()
 
@@ -190,9 +206,13 @@ const ctx = {
   get: (name) => {
     if (name === 'locale') return {
       register: () => {},
-      // Dictionary lookup for one badge key proves the bound t reaches the
-      // badge; everything else stays identity (existing assertions match keys).
-      bind: () => (k) => (k === 'badgeRoutePrefix' ? '路由' : k),
+      // Mostly identity, because the existing assertions match KEYS. Two
+      // exceptions, both load-bearing:
+      //   - `badgeRoutePrefix` proves the bound t actually reaches the badge.
+      //   - the effort templates carry {placeholders}; an identity t would
+      //     erase the very values those assertions check for, so they resolve
+      //     to their real templates.
+      bind: () => (k) => (k in localeOverrides ? localeOverrides[k] : k),
     }
     if (name === 'slots') return {
       inject: (slotName, fn) => fn(),
@@ -378,6 +398,10 @@ renderAt(tree, fake, 'root', outO)
 assert(outO.some((n) => String(n.className).includes('mpro-statCard')), 'observability renders stat cards')
 assert(outO.some((n) => String(n.className).includes('mpro-tblWrap')), 'observability renders tables')
 assert(outO.some((n) => String(n.className).includes('mpro-logOk') || String(n.className).includes('mpro-logErr')), 'request-log status styling present')
+// The thinking-level column: a clamped entry must render BOTH levels, because a
+// successful downgrade is otherwise invisible everywhere in the product.
+assert(outO.some((n) => String(n.className).includes('mpro-logEffortClamped') && /max/.test(n.text || '') && /medium/.test(n.text || '')),
+  'request-log marks a clamped thinking level with both levels: ' + JSON.stringify(outO.filter((n) => String(n.className).includes('mpro-logEffort')).map((n) => n.text)))
 
 // -- probe tab renders target health rows with status dots --
 const probeTab = outO.find((n) => n.tag === 'button' && /tabProbe/i.test(n.text || ''))
@@ -500,6 +524,10 @@ assert(outA.some((n) => String(n.className).includes('mpro-reasonCell')), 'the m
   assert(badgeOut.some((n) => String(n.className).includes('mpro-badgeRow')), 'badge row renders for a routed turn')
   assert(badgeOut.some((n) => (n.text || '') === '路由'), 'badge renders the TRANSLATED label, not the raw dictionary key')
   assert(badgeOut.some((n) => String(n.className).includes('mpro-badgeChip') && /deepseek-chat/.test(n.text || '')), 'badge names the serving target: ' + JSON.stringify(badgeOut.filter((n) => String(n.className).includes('mpro-badge')).map((n) => n.text)))
+  // The turn ran at `medium` while the selector still says `max`; the chat view
+  // has no other place that admits it.
+  assert(badgeOut.some((n) => String(n.className).includes('mpro-badgeChipEffort') && /max/.test(n.text || '') && /medium/.test(n.text || '')),
+    'badge surfaces the clamped thinking level: ' + JSON.stringify(badgeOut.filter((n) => String(n.className).includes('mpro-badge')).map((n) => n.text)))
 
   // a turn outside the window renders nothing
   const far = { from: sel.to + 60_000, to: sel.to + 120_000 }
