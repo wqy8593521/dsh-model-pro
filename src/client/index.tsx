@@ -94,3 +94,6 @@ export function apply(ctx: any) {
 /** Test-only re-export: the smoke harness asserts the per-turn correlation
  * window directly (it is pure and the badge's correctness hinges on it). */
 export { preciseWindowKey } from './components/RouteBadge'
+
+/** 测试设置页切换时的滚动容器定位。 */
+export { findScrollableAncestor, resetEditorScroll } from './components/ProviderEditor'

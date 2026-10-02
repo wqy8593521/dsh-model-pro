@@ -6,7 +6,7 @@ import type { BootState, CreateFormState, StatusMsg, TFunc, CallFn, ProviderData
 import { fmt } from '../labels'
 import { CreateForm } from './CreateForm'
 import { ProviderCard } from './ProviderCard'
-import { ProviderEditor, type EditorTab } from './ProviderEditor'
+import { ProviderEditor, findScrollableAncestor, type EditorTab } from './ProviderEditor'
 import { RoutesPanel } from './RoutesPanel'
 
 interface Props {
@@ -34,6 +34,22 @@ export function ModelProPage({ t, call }: Props) {
   const [segment, setSegment] = React.useState<Segment>('all')
   const [status, setStatus] = React.useState<StatusMsg | null>(null)
   const [busy, setBusy] = React.useState(false)
+  const dashboardRef = React.useRef<HTMLDivElement | null>(null)
+  const listScrollTop = React.useRef<number | null>(null)
+  const attachDashboard = React.useCallback((node: HTMLDivElement | null) => {
+    dashboardRef.current = node
+    if (node && listScrollTop.current !== null) {
+      const scroller = findScrollableAncestor(node)
+      if (scroller) {
+        scroller.scrollTop = listScrollTop.current
+        listScrollTop.current = null
+      }
+    }
+  }, [])
+  const rememberListScroll = () => {
+    const scroller = findScrollableAncestor(dashboardRef.current)
+    if (scroller) listScrollTop.current = scroller.scrollTop
+  }
 
   const set = (p: Partial<CreateFormState>) => setForm((f) => ({ ...f, ...p }))
   const fail = (e: unknown) => setStatus({ kind: 'err', text: (e as Error)?.message || String(e) })
@@ -58,6 +74,7 @@ export function ModelProPage({ t, call }: Props) {
   }
 
   const openEdit = async (route: string, tab?: EditorTab) => {
+    rememberListScroll()
     setBusy(true); setStatus(null)
     try {
       const r = await call('get-provider', { route })
@@ -68,6 +85,7 @@ export function ModelProPage({ t, call }: Props) {
 
   const onCreate = async (mode: 'config' | 'test') => {
     if (!validate()) return
+    rememberListScroll()
     setBusy(true); setStatus(null)
     try {
       const r = await call('create-provider', form as unknown as Record<string, unknown>)
@@ -141,7 +159,7 @@ export function ModelProPage({ t, call }: Props) {
   )
 
   return (
-    <div className="mpro-root">
+    <div className="mpro-root" ref={attachDashboard}>
       <div className="mpro-head">
         <div className="mpro-headLeft">
           <h2 className="mpro-title">{t('title')}</h2>
