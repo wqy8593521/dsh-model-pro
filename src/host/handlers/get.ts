@@ -4,6 +4,7 @@ import { readProviders, readDisabled, readProfile, readRealModels } from '../uti
 import type { HostCtx } from '../utils'
 import type { HeaderPair } from '../../shared/types'
 import { PLACEHOLDER_MODEL_ID } from '../../shared/constants'
+import { describeModelInput } from '../modelCapabilities'
 import { decryptSecret } from '../crypto'
 
 export async function getProvider(ctx: HostCtx, args: { route?: string; includeSecret?: boolean }) {
@@ -22,7 +23,10 @@ export async function getProvider(ctx: HostCtx, args: { route?: string; includeS
     p.headers && typeof p.headers === 'object'
       ? Object.entries(p.headers).map(([k, v]) => ({ name: k, value: String(v) }))
       : []
-  const models = readRealModels(p)
+  // readRealModels already strips the schema sentinel; describeModelInput then
+  // attaches the DISPLAY-side capability fields (source/conflict/reference)
+  // from plugin state and the live catalog. Native entries never carry them.
+  const models = await Promise.all(readRealModels(p).map((m) => describeModelInput(ctx, route, m)))
   const hasExplicit = models.length > 0
 
   // Advertised model ids for the test dropdown (advisory; may be empty). For a

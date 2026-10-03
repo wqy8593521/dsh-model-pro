@@ -4,7 +4,7 @@
  * custom-model add form. */
 
 import React from '../react'
-import type { ModelEntry, DiscoveredModel, InfoState, StatusMsg, TFunc, CallFn, ReasoningEfforts } from '../../shared/types'
+import type { ModelEntry, ModelCapabilitySummary, DiscoveredModel, InfoState, StatusMsg, TFunc, CallFn, ReasoningEfforts } from '../../shared/types'
 import { fmt } from '../labels'
 import { THINKING_LEVELS } from '../../shared/constants'
 import { ReasoningEditor } from './ReasoningEditor'
@@ -46,9 +46,20 @@ interface AddDraft {
   ctx: string
   out: string
   wire: string
+  capability: CapabilityChoice
 }
 
-const EMPTY_DRAFT: AddDraft = { id: '', name: '', ctx: '', out: '', wire: '' }
+/** The user-facing capability choice: `auto` defers to backend detection. */
+type CapabilityChoice = 'auto' | 'text' | 'image'
+
+const EMPTY_DRAFT: AddDraft = { id: '', name: '', ctx: '', out: '', wire: '', capability: 'auto' }
+
+/** 未提供能力与已确认仅支持文本是不同状态，不能根据模型名猜测。 */
+const capabilityChoice = (model: ModelEntry): CapabilityChoice =>
+  model.input?.includes('image') ? 'image' : model.input?.includes('text') ? 'text' : 'auto'
+
+const capabilityInput = (choice: Exclude<CapabilityChoice, 'auto'>): Array<'text' | 'image'> =>
+  choice === 'image' ? ['text', 'image'] : ['text']
 
 export function ModelsPanel({
   t, call, route, info, set, protocols, models, setModels,
@@ -64,6 +75,11 @@ export function ModelsPanel({
   // Manual custom-model form.
   const [showAdd, setShowAdd] = React.useState(false)
   const [draft, setDraft] = React.useState<AddDraft>(EMPTY_DRAFT)
+  // Per-model capability choices not yet saved; sending them rides the next
+  // 保存模型配置 call, so 重新识别 stays blocked while drafts are pending.
+  const [capabilityDraft, setCapabilityDraft] = React.useState<Record<string, CapabilityChoice>>({})
+  // Whether the wire-name inputs have unsaved edits (same contract as above).
+  const [mappingDirty, setMappingDirty] = React.useState(false)
   // Which model's thinking-level editor is open (one at a time: the panel is a
   // detail view, and two open editors could disagree about the same list).
   const [reasonFor, setReasonFor] = React.useState<string | null>(null)
@@ -84,6 +100,9 @@ export function ModelsPanel({
   }, [call])
 
   const curList = models || []
+  const hasUnsavedConfig = mappingDirty || Object.keys(capabilityDraft).length > 0
+  const draftCapability = (id: string): CapabilityChoice | undefined =>
+    Object.prototype.hasOwnProperty.call(capabilityDraft, id) ? capabilityDraft[id] : undefined
 
   // --- discovered list: search-aware bulk selection -------------------------
   const discVisible = (discovered || []).filter((m) => matchQ(m, discQ))
@@ -156,6 +175,8 @@ export function ModelsPanel({
     const fresh = await call('get-provider', { route })
     const list: ModelEntry[] = fresh.models || []
     setModels(list)
+    setCapabilityDraft({})
+    setMappingDirty(false)
     pruneCurSel(list)
     return list
   }
@@ -185,16 +206,54 @@ export function ModelsPanel({
   const setRequestModel = async (id: string, wire: string) => {
     const next = curList.map((m) => (m.id === id ? { ...m, ...(wire.trim() ? { requestModel: wire.trim() } : { requestModel: undefined }) } : m))
     setModels(next)
+    setMappingDirty(true)
   }
 
-  const saveMappings = async () => {
-    const list = curList.filter((m) => m.requestModel)
+  /** Save the whole current list — wire names plus any pending capability
+   * choices. 能力展示结果不等于人工选择；普通保存只更新其它模型字段，
+   * 未选择的能力模型条目不带 input/inputMode，由后端保留或重新判定来源。 */
+  const saveModelConfig = async () => {
+    const list = curList.map((m) => {
+      const choice = draftCapability(m.id)
+      const entry: Record<string, unknown> = { ...m, requestModel: m.requestModel?.trim() || null }
+      delete entry.input
+      delete entry.inputMode
+      for (const key of Object.keys(entry)) if (key.startsWith('capability')) delete entry[key]
+      if (!choice) return entry
+      return { ...entry, inputMode: choice === 'auto' ? 'auto' : 'manual', input: choice === 'auto' ? null : capabilityInput(choice) }
+    })
     if (!list.length) return
     setBusy(true); setStatus(null)
     try {
       const r = await call('apply-models', { route, models: list, mode: 'merge' })
       setStatus({ kind: 'ok', text: fmt(t('statusModels'), { count: r.count }) })
       await refreshModels()
+    } catch (e) { fail(e) } finally { setBusy(false) }
+  }
+
+  /** 重新识别并保存能力 — catalog/official/provider-default detection only,
+   * no inference requests. Manual choices survive; legacy configs are
+   * re-reviewed (recheckLegacy) so an unknown source can be reconciled. */
+  const identifyCapabilities = async () => {
+    if (!curList.length || hasUnsavedConfig) return
+    setBusy(true); setStatus(null)
+    try {
+      // 识别只发送 ID，避免把读取时附加的推断能力当成用户手动配置。
+      const r = await call('apply-models', { route, models: curList.map(({ id }) => ({ id })), mode: 'identify', recheckLegacy: true })
+      const fresh = await refreshModels()
+      const summary = r.capabilitySummary as ModelCapabilitySummary | undefined
+      const counts = summary ?? fresh.reduce((sum, m) => {
+        if (m.input?.includes('image')) sum.image++
+        else if (m.input?.includes('text')) sum.text++
+        else sum.unknown++
+        return sum
+      }, { image: 0, text: 0, unknown: 0 })
+      const result = summary
+        ? fmt(t('statusCapabilities'), { image: summary.image, text: summary.text, unknown: summary.unknown, preserved: summary.preserved, updated: summary.updated, rechecked: summary.rechecked ?? 0, conflicts: summary.conflicts ?? 0 })
+        : fmt(t('statusCapabilitiesCurrent'), { image: counts.image, text: counts.text, unknown: counts.unknown })
+      const hint = counts.unknown > 0 ? ` ${t('capabilitiesUnconfirmed')}` : ''
+      const conflictHint = (summary?.conflicts ?? 0) > 0 ? ` ${t('capabilityConflictHint')}` : ''
+      setStatus({ kind: summary?.catalogUnavailable ? 'err' : 'ok', text: `${summary?.catalogUnavailable ? `${t('capabilityCatalogUnavailable')} ` : ''}${result}${hint}${conflictHint}` })
     } catch (e) { fail(e) } finally { setBusy(false) }
   }
 
@@ -214,7 +273,8 @@ export function ModelsPanel({
       ...(numOrNull(draft.ctx) != null ? { contextWindow: numOrNull(draft.ctx) } : {}),
       ...(numOrNull(draft.out) != null ? { maxTokens: numOrNull(draft.out) } : {}),
       ...(draft.wire.trim() ? { requestModel: draft.wire.trim() } : {}),
-    }
+      ...(draft.capability !== 'auto' ? { input: capabilityInput(draft.capability), inputMode: 'manual' } : {}),
+    } as ModelEntry
     setBusy(true); setStatus(null)
     try {
       await call('apply-models', { route, models: [entry], mode: 'merge' })
@@ -258,9 +318,48 @@ export function ModelsPanel({
     />
   )
 
+  /** Read-only capability display: the value plus WHERE it came from. A
+   * missing value renders as 未确认 — never as text-only. */
+  const capabilityBadge = (model: ModelEntry) => {
+    const choice = capabilityChoice(model)
+    let sourceKey = 'capabilitySourceUnknown'
+    switch (String(model.capabilitySource)) {
+      case 'configured': sourceKey = 'capabilitySourceConfigured'; break
+      case 'manual': sourceKey = 'capabilitySourceManual'; break
+      case 'catalog': sourceKey = 'capabilitySourceCatalog'; break
+      case 'official': sourceKey = 'capabilitySourceOfficial'; break
+      case 'provider-default': sourceKey = 'capabilitySourceProviderDefault'; break
+      case 'discovery': sourceKey = 'capabilitySourceDiscovery'; break
+    }
+    return (
+      <div>
+        <span className={choice === 'auto' ? 'mpro-chip mpro-capabilityUnknown' : 'mpro-chip'}>{t(choice === 'image' ? 'inputTextImage' : choice === 'text' ? 'inputTextOnly' : 'inputUnknown')}</span>
+        <div className="mpro-hint">{t(sourceKey)}</div>
+        {typeof model.capabilityReference === 'string' && model.capabilityReference && <div className="mpro-hint" style={{ maxWidth: 260, overflowWrap: 'anywhere' }}>{t('capabilityReferenceLabel')}: {model.capabilityReference}</div>}
+        {model.capabilityConflict && <div className="mpro-hint">{t('capabilityConflictHint')}</div>}
+      </div>
+    )
+  }
+
+  const capabilitySelect = (value: CapabilityChoice, onChange: (value: CapabilityChoice) => void, label: string) => (
+    <select
+      className="mpro-input mpro-select mpro-capabilitySelect"
+      aria-label={label}
+      title={t('inputCapabilityHint')}
+      value={value}
+      disabled={busy}
+      onChange={(e) => onChange(e.target.value as CapabilityChoice)}
+    >
+      <option value="auto">{t('inputAuto')}</option>
+      <option value="text">{t('inputTextOnly')}</option>
+      <option value="image">{t('inputTextImage')}</option>
+    </select>
+  )
+
   return (
     <div className="mpro-panel">
       <p className="mpro-hint">{t('modelsHint')}</p>
+      <p className="mpro-hint">{t('inputCapabilityHint')}</p>
 
       {/* discovery bar */}
       <div className="mpro-discoverBar">
@@ -362,6 +461,10 @@ export function ModelsPanel({
               onChange={(e) => setDraftField({ wire: e.target.value })}
             />
           </div>
+          <div className="mpro-field" style={{ flex: 1, minWidth: 150 }}>
+            <span className="mpro-fieldLabel">{t('inputCapabilityCol')}</span>
+            {capabilitySelect(draft.capability, (capability) => setDraftField({ capability }), t('addModelInputLabel'))}
+          </div>
           <button
             className="mpro-btn mpro-btnPrimary"
             disabled={busy || !draft.id.trim()}
@@ -398,6 +501,7 @@ export function ModelsPanel({
                       <th className="mpro-tblCk"></th>
                       <th>{t('idCol')}</th>
                       <th>{t('nameCol')}</th>
+                      <th>{t('inputCapabilityCol')}</th>
                       <th>{t('ctxCol')}</th>
                       <th>{t('outCol')}</th>
                     </tr>
@@ -410,6 +514,7 @@ export function ModelsPanel({
                         </td>
                         <td className="mpro-id">{m.id}</td>
                         <td>{m.name || m.id}</td>
+                        <td>{capabilityBadge(m as ModelEntry)}</td>
                         <td className="mpro-dim">{m.contextWindow ? String(m.contextWindow) : '—'}</td>
                         <td className="mpro-dim">{m.maxTokens ? String(m.maxTokens) : '—'}</td>
                       </tr>
@@ -443,9 +548,19 @@ export function ModelsPanel({
               <button className="mpro-btn mpro-btnSm" onClick={invertCur}>{t('invert')}</button>
             </>
           )}
-          {(curList || []).some((m) => m.requestModel) && (
-            <button className="mpro-btn mpro-btnSm" disabled={busy} onClick={() => void saveMappings()}>
-              {t('saveMappings')}
+          {(curList || []).length > 0 && (
+            <button className="mpro-btn mpro-btnSm" disabled={busy} onClick={() => void saveModelConfig()}>
+              {t('saveModelConfig')}
+            </button>
+          )}
+          {(curList || []).length > 0 && (
+            <button
+              className="mpro-btn mpro-btnSm"
+              disabled={busy || hasUnsavedConfig}
+              title={hasUnsavedConfig ? t('saveModelConfigFirst') : undefined}
+              onClick={() => void identifyCapabilities()}
+            >
+              {t('identifyCapabilities')}
             </button>
           )}
           {curList.length > 0 && (
@@ -484,6 +599,7 @@ export function ModelsPanel({
                   <th className="mpro-tblCk"></th>
                   <th>{t('idCol')}</th>
                   <th>{t('nameCol')}</th>
+                  <th>{t('inputCapabilityCol')}</th>
                   <th>{t('reqModelField')}</th>
                   <th>{t('reasonCol')}</th>
                 </tr>
@@ -498,10 +614,22 @@ export function ModelsPanel({
                       <td className="mpro-id">{m.id}</td>
                       <td>{m.name || m.id}</td>
                       <td>
+                        <div className="mpro-capabilityCell">
+                          {capabilityBadge(m)}
+                          {capabilitySelect(
+                            draftCapability(m.id) ?? (m.capabilitySource === 'manual' ? capabilityChoice(m) : 'auto'),
+                            (choice) => setCapabilityDraft((d) => ({ ...d, [m.id]: choice })),
+                            `${t('inputCapabilityCol')}: ${m.id}`,
+                          )}
+                        </div>
+                      </td>
+                      <td>
                         <input
+                          aria-label={`${t('reqModelField')}: ${m.id}`}
                           title={t('reqModelHint')}
                           className="mpro-input mpro-inputMono"
                           style={{ width: 150 }}
+                          disabled={busy}
                           value={m.requestModel || ''}
                           placeholder="—"
                           onChange={(e) => void setRequestModel(m.id, e.target.value)}
@@ -521,7 +649,7 @@ export function ModelsPanel({
                     </tr>
                     {reasonFor === m.id && (
                       <tr>
-                        <td colSpan={5}>
+                        <td colSpan={6}>
                           <ReasoningEditor
                             t={t}
                             call={call}

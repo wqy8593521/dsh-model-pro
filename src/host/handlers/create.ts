@@ -3,9 +3,20 @@
 import { PLACEHOLDER_MODEL_ID, PROTOS } from '../../shared/constants'
 import type { HostCtx } from '../utils'
 import { readProviders, readDisabled, checkWritable, writeSection, makeHostPlain } from '../utils'
+import { readCapabilityState, saveCapabilities, withCapabilityWrite } from '../capabilityStore'
 import { setApiKey } from './updateKey'
 
 export async function createProvider(
+  ctx: HostCtx,
+  args: { route?: string; displayName?: string; api?: string; baseURL?: string; apiKeyEnv?: string; apiKey?: string },
+) {
+  const st = ctx.get('settings')
+  if (st === undefined) return { ok: false as const, error: 'settings 服务不可用' }
+  if (!checkWritable(st)) return { ok: false as const, error: '设置只读' }
+  return withCapabilityWrite(st, () => createProviderLocked(ctx, args))
+}
+
+async function createProviderLocked(
   ctx: HostCtx,
   args: { route?: string; displayName?: string; api?: string; baseURL?: string; apiKeyEnv?: string; apiKey?: string },
 ) {
@@ -47,7 +58,11 @@ export async function createProvider(
     const existingDisabled: Record<string, unknown> = {}
     for (const k of Object.keys(disabled)) existingDisabled[k] = (disabled as any)[k]
 
-    await writeSection(st, next as any, existingDisabled as any)
+    // 外部配置可能删掉供应商而留下能力来源；同名新建不能继承上一个供应商的人工锁定。
+    const before = readCapabilityState(st)
+    const after = { ...before }
+    delete after[id]
+    await saveCapabilities(st, before, after, () => writeSection(st, next as any, existingDisabled as any))
   } catch (err) {
     return { ok: false as const, error: String((err as Error)?.message || err) }
   }

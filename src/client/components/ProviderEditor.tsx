@@ -17,10 +17,9 @@ interface Props {
   data: ProviderData
   initialTab?: EditorTab
   onBack: () => void
-  fail: (e: unknown) => void
 }
 
-export function ProviderEditor({ t, call, data, initialTab, onBack, fail }: Props) {
+export function ProviderEditor({ t, call, data, initialTab, onBack }: Props) {
   const [tab, setTab] = React.useState<EditorTab>(initialTab || 'overview')
   const [disabled, setDisabled] = React.useState(!!data.disabled)
   const [info, setInfo] = React.useState<InfoState>({
@@ -40,6 +39,8 @@ export function ProviderEditor({ t, call, data, initialTab, onBack, fail }: Prop
   const [status, setStatus] = React.useState<StatusMsg | null>(null)
 
   const set = (p: Partial<InfoState>) => setInfo((f) => ({ ...f, ...p }))
+  // 编辑页替代父级仪表盘，错误必须写入当前可见页的状态。
+  const fail = (e: unknown) => setStatus({ kind: 'err', text: (e as Error)?.message || String(e) })
 
   React.useEffect(() => {
     call('list-providers').then((r: any) => { if (r.protocols) setProtocols(r.protocols) }).catch(() => {})
@@ -180,6 +181,7 @@ export function ProviderEditor({ t, call, data, initialTab, onBack, fail }: Prop
           {tabBtn('test', t('tabTest'))}
         </div>
         {activePanel}
+        {tab === 'test' && inlineStatus}
       </div>
     </div>
   )

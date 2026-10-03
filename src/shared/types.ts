@@ -188,6 +188,31 @@ export interface ProviderProfile {
  * cannot be derived from the level list alone. */
 export type ReasoningEfforts = Partial<Record<ThinkingLevel, string | null>>
 
+/** One input modality a model accepts. Missing from a model entry means
+ * UNDECLARED — nothing is known — which is a different thing from text-only. */
+export type ModelInput = 'text' | 'image'
+
+/** Where a model's displayed input capability came from.
+ *
+ * `configured` is the display fallback for an entry whose native config carries
+ * `input` but whose plugin-state record is missing (pre-provenance config):
+ * the value is shown, its ORIGIN is marked unknown. The other five are
+ * recorded provenance: `manual` is protected by every later save, the rest can
+ * be re-derived by 重新识别. */
+export type ModelCapabilitySource = 'configured' | 'manual' | 'discovery' | 'catalog' | 'official' | 'provider-default'
+
+/** Aggregate result of one 重新识别 run, for the status line. */
+export interface ModelCapabilitySummary {
+  image: number
+  text: number
+  unknown: number
+  preserved: number
+  updated: number
+  catalogUnavailable: boolean
+  rechecked: number
+  conflicts: number
+}
+
 /** A model entry in a provider's models array. `requestModel`, when set, is the
  * real model id forwarded to the provider (the wire id differs from the
  * selectable `id` — see the llm/stream rewrite in the host half). */
@@ -196,6 +221,16 @@ export interface ModelEntry {
   name?: string
   contextWindow?: number
   maxTokens?: number
+  /** The input types this model accepts, as DECLARED. Persisted on the native
+   * entry; an absent key (or a schema-generated `[]`) means undeclared, not
+   * text-only. Display-only provenance fields live in plugin state, never
+   * here. */
+  input?: ModelInput[]
+  /** DISPLAY ONLY (attached at read time): where `input` came from. Never
+   * persisted — stripDisplay removes it before any write. */
+  capabilitySource?: ModelCapabilitySource
+  capabilityConflict?: boolean
+  capabilityReference?: string
   /** Optional wire model id different from `id`. */
   requestModel?: string
   /** Reasoning capability: absent = inherit the catalog, `false` = does not
@@ -258,12 +293,15 @@ export interface HeaderPair {
   value: string
 }
 
-/** A discovered model from the llm.discoverModels API */
+/** A discovered model from the ll.discoverModels API. `inputModalities` is the
+ * live catalog's spelling of the declared input types; `input` is what the
+ * rest of the plugin uses once the value has been adopted. */
 export interface DiscoveredModel {
   id: string
   name: string
   contextWindow?: number
   maxTokens?: number
+  inputModalities?: ModelInput[]
 }
 
 /** RPC response wrapper */

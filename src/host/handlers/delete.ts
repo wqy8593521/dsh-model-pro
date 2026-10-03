@@ -2,8 +2,16 @@
 
 import type { HostCtx } from '../utils'
 import { readProviders, readDisabled, checkWritable, writeSection } from '../utils'
+import { readCapabilityState, saveCapabilities, withCapabilityWrite } from '../capabilityStore'
 
 export async function deleteProvider(ctx: HostCtx, args: { route?: string }) {
+  const st = ctx.get('settings')
+  if (st === undefined) return { ok: false as const, error: 'settings 服务不可用' }
+  if (!checkWritable(st)) return { ok: false as const, error: '设置只读' }
+  return withCapabilityWrite(st, () => deleteProviderLocked(ctx, args))
+}
+
+async function deleteProviderLocked(ctx: HostCtx, args: { route?: string }) {
   const st = ctx.get('settings')
   if (st === undefined) return { ok: false as const, error: 'settings 服务不可用' }
   if (!checkWritable(st)) return { ok: false as const, error: '设置只读' }
@@ -30,7 +38,10 @@ export async function deleteProvider(ctx: HostCtx, args: { route?: string }) {
     for (const k of Object.keys(disabled)) {
       if (k !== route) nextDisabled[k] = (disabled as any)[k]
     }
-    await writeSection(st, nextProviders as any, nextDisabled as any)
+    const before = readCapabilityState(st)
+    const after = { ...before }
+    delete after[route]
+    await saveCapabilities(st, before, after, () => writeSection(st, nextProviders as any, nextDisabled as any))
   } catch (err) {
     return { ok: false as const, error: String((err as Error)?.message || err) }
   }

@@ -15,6 +15,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import vm from 'node:vm'
+import assertStrict from 'node:assert/strict'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const HOST_BUNDLE = path.join(__dirname, '..', 'dist', 'host.js')
@@ -1601,4 +1602,161 @@ await P('delete-provider', { route: 'comp-b' })
   assert(provs()['unl-gw'] && !Object.hasOwn(dis(), 'unl-gw'), 'uninstall-restore is NOT undone by a late settings/updated re-park')
 }
 
-console.log('PASS: host end-to-end smoke — all assertions green')
+// ---------------------------------------------------------------------------
+// Model input capabilities: detection, provenance, manual protection.
+// 多模态必须落到配置 input，不能只让 UI 看起来支持图片。
+// ---------------------------------------------------------------------------
+{
+  const initialCaps = { providers: {
+    gateway: { api: 'openai-completions', baseURL: 'https://gateway.invalid/v1', models: [
+      { id: 'known-image' }, { id: 'alias', requestModel: 'known-image' },
+      { id: 'alias-edit', requestModel: 'known-image' }, { id: 'manual', input: ['text'] },
+      { id: 'conflicting' }, { id: 'unsupported-conflict' }, { id: 'unknown-vision-name' },
+    ] },
+    text: { api: 'openai-completions', baseURL: 'https://text.invalid/v1', models: [{ id: 'same', input: ['text'] }] },
+    vision: { api: 'openai-completions', baseURL: 'https://vision.invalid/v1', models: [{ id: 'same', input: ['text', 'image'] }] },
+    unknown: { api: 'openai-completions', baseURL: 'https://unknown.invalid/v1', models: [{ id: 'same' }] },
+    'image-default': { defaultInput: ['text', 'image'], models: [{ id: 'known-text' }] },
+    'text-default': { defaultInput: ['text'], models: [{ id: 'known-image' }] },
+    'catalog-a': { defaultInput: ['text', 'image'], models: [{ id: 'known-text' }] },
+  } }
+  const capStore = createSettings(initialCaps)
+  const capLog = { section: () => capStore.doc() }
+  const capLlm = createLlm(capLog)
+  const catalogCalls = []
+  capLlm.listConfigurableProviders = () => ['catalog-a', 'catalog-b'].map((provider) => ({ settingsNs: 'llm-pi-ai', provider, declared: false }))
+  capLlm.discoverModels = async (_ns, request) => {
+    if (!request.baseURL) {
+      catalogCalls.push(request)
+      assert(!request.apiKey && request.provider.startsWith('catalog-'), 'catalog inference never supplies endpoint or credentials')
+      return [
+        { id: 'known-image', name: 'Known image', inputModalities: ['text', 'image'] },
+        { id: 'manual', name: 'Manual override', inputModalities: ['text', 'image'] },
+        { id: 'known-text', name: 'Known text', inputModalities: ['text'] },
+        { id: 'conflicting', name: 'Conflict', inputModalities: request.provider === 'catalog-a' ? ['text'] : ['text', 'image'] },
+        { id: 'unsupported-conflict', name: 'Unsupported conflict', inputModalities: request.provider === 'catalog-a' ? ['text', 'audio'] : ['text'] },
+      ]
+    }
+    return [
+      { id: 'known-image', name: 'Listed image' },
+      { id: 'remote-image', name: 'Remote metadata', inputModalities: ['text', 'image'] },
+      { id: 'remote-text', name: 'Remote text', inputModalities: ['text'] },
+      { id: 'new-vision-name', name: 'Unknown' },
+    ]
+  }
+  const capCleanups = []
+  const capCtx = { get(name) { return name === 'settings' ? capStore : name === 'llm' ? capLlm : undefined },
+    typert: { register: () => () => {} }, on: () => () => {},
+    effect(fn) { const cleanup = fn(); if (typeof cleanup === 'function') capCleanups.push(cleanup) },
+  }
+  const capHost = await loadHost()
+  capHost.apply(capCtx)
+  const call = (method, args = {}) => capHost.runtimes.at(-1)[kebabToCamel(method)](args)
+  const beforeRead = JSON.stringify(capStore.doc())
+  let result = await call('get-provider', { route: 'gateway' })
+  const byId = new Map(result.models.map((entry) => [entry.id, entry]))
+  assert(byId.get('known-image').input.includes('image') && byId.get('known-image').capabilitySource === 'catalog', 'exact catalog id identifies image input on custom route')
+  assert(byId.get('alias').input.includes('image'), 'wire model identity is used for local aliases')
+  assert(byId.get('manual').input.join() === 'text', 'manual text-only input wins over catalog')
+  assert(!byId.get('conflicting').input && !byId.get('unknown-vision-name').input, 'ambiguous or unknown vision-looking names stay unconfirmed')
+  assert(!byId.get('unsupported-conflict').input, 'unsupported same-name catalog entry prevents a false text-only inference')
+  assert(JSON.stringify(capStore.doc()) === beforeRead, 'reading capabilities does not mutate provider configuration')
+  assert((await call('get-provider', { route: 'image-default' })).models[0].input.includes('image'), 'declared provider image default wins over a different provider catalog')
+  assert((await call('get-provider', { route: 'text-default' })).models[0].input.includes('image'), 'a generic text default does not mislabel a known image model in the capability UI')
+  assert((await call('get-provider', { route: 'catalog-a' })).models[0].input.join() === 'text', 'same-provider catalog precedes provider default, matching Harness resolution')
+  result = await call('apply-models', { route: 'gateway', models: [{ ...byId.get('alias-edit'), requestModel: 'known-text' }], mode: 'merge' })
+  assert(result.ok && capStore.doc().providers.gateway.models.find((entry) => entry.id === 'alias-edit').input.join() === 'text', 'editing an unsaved inferred alias re-identifies the new wire model')
+  byId.delete('alias-edit')
+  result = await call('discover-models', { route: 'gateway' })
+  assert(result.models.find((entry) => entry.id === 'remote-image').input.includes('image'), 'discovery preserves framework inputModalities')
+  assert(result.models.find((entry) => entry.id === 'remote-text').input.join() === 'text', 'remote text metadata is distinguished from unknown')
+  assert(!result.models.find((entry) => entry.id === 'new-vision-name').input, 'remote unknown stays unconfirmed')
+  result = await call('apply-models', { route: 'gateway', models: [...byId.values()], mode: 'merge' })
+  assert(result.ok && capStore.doc().providers.gateway.models.find((entry) => entry.id === 'known-image').input.includes('image'), 'identified capability is persisted to Harness input field')
+  assert(!JSON.stringify(capStore.doc()).includes('capabilitySource'), 'display-only capability source never leaks into configuration')
+  await call('apply-models', { route: 'gateway', models: [{ id: 'manual', input: ['text', 'image'], capabilitySource: 'discovery' }], mode: 'merge' })
+  assert(capStore.doc().providers.gateway.models.find((entry) => entry.id === 'manual').input.join() === 'text', 'automatic refresh preserves confirmed text-only choice')
+  await call('apply-models', { route: 'gateway', models: [{ id: 'manual', input: null }], mode: 'merge' })
+  assert(capStore.doc().providers.gateway.models.find((entry) => entry.id === 'manual').input.includes('image'), 'automatic reset removes override and re-identifies capability')
+  await call('apply-models', { route: 'gateway', models: [{ id: 'manual', input: ['text'] }], mode: 'merge' })
+  result = await call('apply-models', { route: 'gateway', models: capStore.doc().providers.gateway.models.map((entry) => entry.id === 'manual' ? { ...entry, input: null, capabilitySource: 'catalog' } : entry), mode: 'replace' })
+  assert(result.ok && capStore.doc().providers.gateway.models.find((entry) => entry.id === 'manual').input.includes('image'), 'replace reset takes priority over prior input and display source')
+  await call('apply-models', { route: 'gateway', models: [{ id: 'alias', input: ['text'], requestModel: null }], mode: 'merge' })
+  assert(!capStore.doc().providers.gateway.models.find((entry) => entry.id === 'alias').requestModel, 'clearing wire mapping persists')
+  const beforeInvalid = JSON.stringify(capStore.doc())
+  for (const input of [['audio'], ['text', 'video'], 'image']) {
+    result = await call('apply-models', { route: 'gateway', models: [{ id: 'known-image', input }], mode: 'merge' })
+    assert(!result.ok && JSON.stringify(capStore.doc()) === beforeInvalid, 'invalid/unsupported input fails without writing')
+  }
+  await call('toggle-provider', { route: 'gateway', enabled: false })
+  await call('apply-models', { route: 'gateway', models: [{ id: 'known-image', input: ['text'] }], mode: 'merge' })
+  assert(capStore.doc().disabledProviders.gateway.models.find((entry) => entry.id === 'known-image').input.join() === 'text', 'disabled provider capability remains editable')
+  assert(catalogCalls.length === 2, 'catalog identity index is reused without repeated discovery')
+
+  const identifyStore = createSettings({ providers: { gateway: { defaultInput: ['text'], models: [
+    { id: 'known-image', input: [] }, { id: 'manual', input: ['text'] }, { id: 'unknown-vision-name', input: [] },
+  ] } } })
+  const identifyHost = await loadHost()
+  identifyHost.apply({ ...capCtx, get: (name) => name === 'settings' ? identifyStore : name === 'llm' ? capLlm : undefined })
+  const identifyRpc = identifyHost.runtimes.at(-1)
+  const identifyArgs = { route: 'gateway', mode: 'identify', models: identifyStore.doc().providers.gateway.models.map(({ id }) => ({ id })) }
+  result = await identifyRpc.applyModels(identifyArgs)
+  assertStrict.deepEqual(JSON.parse(JSON.stringify(result.capabilitySummary)), { image: 1, text: 1, unknown: 1, preserved: 1, updated: 1, rechecked: 2, conflicts: 0, catalogUnavailable: false })
+  assert(identifyStore.doc().providers.gateway.models[0].input.includes('image'), 'dedicated identify treats schema [] as undeclared and bypasses a generic text default')
+  const afterIdentify = JSON.stringify(identifyStore.doc())
+  result = await identifyRpc.applyModels(identifyArgs)
+  assert(result.capabilitySummary.updated === 0 && result.capabilitySummary.preserved === 1 && result.capabilitySummary.rechecked === 2 && result.capabilitySummary.unknown === 1, 'repeated identify rechecks automatic input and keeps only the legacy override')
+  assert(JSON.stringify(identifyStore.doc()) === afterIdentify, 'no capability updates leave the settings unchanged')
+  result = await identifyRpc.applyModels({ route: 'gateway', mode: 'identify', models: [{ id: 'removed-model' }] })
+  assert(!result.ok && JSON.stringify(identifyStore.doc()) === afterIdentify, 'stale identify IDs fail visibly without overwriting provider data')
+
+  // 用户反馈：旧 text 在自定义网关上的 DeepSeek V4.1 Flash 必须能被显式复核纠正。
+  identifyStore.doc().providers.dsGateway = { api: 'openai-completions', baseURL: 'https://ds-fixture.invalid/v1', defaultInput: ['text'], models: [{ id: 'deepseek-v4.1-flash', input: ['text'] }] }
+  let ds = await identifyRpc.getProvider({ route: 'dsGateway' })
+  assert(ds.models[0].capabilitySource === 'configured', 'legacy input is not falsely tagged as a manual choice')
+  const dsArgs = { route: 'dsGateway', mode: 'identify', recheckLegacy: true, models: [{ id: 'deepseek-v4.1-flash' }] }
+  result = await identifyRpc.applyModels(dsArgs)
+  assert(result.ok && result.capabilitySummary.updated === 1, 'explicit recheck updates the legacy text declaration')
+  ds = await identifyRpc.getProvider({ route: 'dsGateway' })
+  assert(ds.models[0].input.includes('image') && ds.models[0].capabilitySource === 'official' && ds.models[0].capabilityReference.includes('api-docs.deepseek.com'), 'reviewed exact official-model metadata is saved with its source')
+  assert(!JSON.stringify(identifyStore.doc().providers.dsGateway).includes('capability'), 'origin metadata stays outside native Pi provider schema')
+  result = await identifyRpc.applyModels({ route: 'dsGateway', mode: 'merge', models: [{ id: 'deepseek-v4.1-flash', input: ['text'], inputMode: 'manual' }] })
+  assert(result.ok, 'manual endpoint restriction can override model capability metadata')
+  result = await identifyRpc.applyModels(dsArgs)
+  assert(result.capabilitySummary.preserved === 1 && result.capabilitySummary.updated === 0 && result.capabilitySummary.rechecked === 0, 'recorded manual text is protected against re-identification')
+  assert((await identifyRpc.getProvider({ route: 'dsGateway' })).models[0].capabilitySource === 'manual', 'manual origin survives reads')
+  await identifyRpc.deleteProvider({ route: 'dsGateway' })
+  assert(!Object.hasOwn(identifyStore.doc().modelCapabilities, 'dsGateway'), 'provider deletion removes its capability records')
+  await identifyRpc.createProvider({ route: 'dsGateway', api: 'openai-completions', baseURL: 'https://ds-fixture.invalid/v1' })
+  await identifyRpc.applyModels({ route: 'dsGateway', mode: 'replace', models: [{ id: 'deepseek-v4.1-flash' }] })
+  assert((await identifyRpc.getProvider({ route: 'dsGateway' })).models[0].input.includes('image'), 'same-name provider recreation does not inherit a previous manual text lock')
+
+  identifyStore.doc().providers.oneMapping = { api: 'openai-completions', baseURL: 'https://one-mapping.invalid/v1', models: [{ id: 'unlisted-local', requestModel: 'deepseek-v4.1-flash' }] }
+  result = await identifyRpc.applyModels({ route: 'oneMapping', mode: 'merge', models: [{ id: 'unlisted-local', inputMode: 'manual', input: ['text', 'image'] }] })
+  assert(result.ok, 'single origin record manual seed succeeds')
+  result = await identifyRpc.applyModels({ route: 'oneMapping', mode: 'merge', models: [{ id: 'unlisted-local', requestModel: null }] })
+  assert(result.ok && !identifyStore.doc().providers.oneMapping.models[0].requestModel && !identifyStore.doc().modelCapabilities.oneMapping, 'clearing the last wire-bound capability source does not trigger a false concurrent-edit error')
+  await identifyRpc.applyModels({ route: 'oneMapping', mode: 'merge', models: [{ id: 'unlisted-local', inputMode: 'manual', input: ['text'] }] })
+  result = await identifyRpc.applyModels({ route: 'oneMapping', mode: 'merge', models: [{ id: 'unlisted-local', inputMode: 'auto', input: null }] })
+  assert(result.ok && !identifyStore.doc().modelCapabilities.oneMapping && !identifyStore.doc().providers.oneMapping.models[0].input, 'automatic reset can remove the last manual source when the model is unknown')
+
+  let ready = false
+  let failCatalog = true
+  const retryLlm = { ...capLlm,
+    listConfigurableProviders: () => ready ? [{ settingsNs: 'llm-pi-ai', provider: 'catalog-a', declared: false }] : [],
+    discoverModels: async (...args) => { if (failCatalog) throw new Error('catalog not ready'); return capLlm.discoverModels(...args) },
+  }
+  const retryStore = createSettings({ providers: { retry: { models: [{ id: 'known-image' }] } } })
+  const retryHost = await loadHost()
+  retryHost.apply({ ...capCtx, get: (name) => name === 'settings' ? retryStore : name === 'llm' ? retryLlm : undefined })
+  const retryRpc = retryHost.runtimes.at(-1)
+  assert(!(await retryRpc.getProvider({ route: 'retry' })).models[0].input, 'pre-ready empty catalog stays unknown')
+  ready = true
+  assert(!(await retryRpc.getProvider({ route: 'retry' })).models[0].input, 'temporary catalog failure stays unknown')
+  failCatalog = false
+  assert((await retryRpc.getProvider({ route: 'retry' })).models[0].input.includes('image'), 'empty and failed catalog caches can recover without restart')
+
+  for (const cleanup of capCleanups.splice(0).reverse()) await cleanup()
+}
+
+console.log('PASS: host end-to-end smoke — legacy and model-capability assertions green')

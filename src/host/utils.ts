@@ -19,7 +19,7 @@ export interface SettingsService {
 }
 
 /** LLM service interface (subset we use) */
-interface LLMService {
+export interface LLMService {
   listConfigurableProviders(): Array<{
     settingsNs: string
     provider: string
@@ -27,7 +27,7 @@ interface LLMService {
     declared?: boolean
   }>
   discoverModels(ns: string, request: Record<string, unknown>): Promise<
-    Array<{ id: string; name?: string; contextWindow?: number; maxTokens?: number }>
+    Array<{ id: string; name?: string; contextWindow?: number; maxTokens?: number; inputModalities?: import('../shared/types').ModelInput[]; input?: unknown }>
   >
 }
 
@@ -166,6 +166,23 @@ export async function writeRoutesRootKey(st: SettingsService | undefined, key: s
     }
   } catch { /* nothing to preserve */ }
   await st.replace(NS, makeHostPlain({ ...preserved, [key]: value }) as any)
+}
+
+/** Owned plugin-state keys (capability provenance, …) read from the llm-pi-ai
+ * section root on the current Harness settings API.
+ *
+ * This is the 0.1-only half of a deliberately narrow seam: the upstream PR
+ * ships a dual-mode variant that retargets these two accessors at the plugin's
+ * OWN namespace via Harness 0.2's describe()/mutate() when `st.get` is absent.
+ * Only this half is ported — the 0.2 branch is dead code until this plugin
+ * actually runs on 0.2 — but every caller is already written against these
+ * two names, so adding the modern branch later touches exactly this file. */
+export function readOwnedStateKey(st: SettingsService, key: string): unknown {
+  return readRoutesRootKey(st, key)
+}
+
+export async function writeOwnedStateKey(st: SettingsService, key: string, value: unknown): Promise<void> {
+  return writeRoutesRootKey(st, key, value)
 }
 
 /** The wire model id for a provider/model: `requestModel` when the provider's
