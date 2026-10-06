@@ -2,13 +2,6 @@
 
 ## 2.0.1 — 2026-10-06
 
-- docs: describe the plugin-owned settings section and DSH 0.1/0.2 compatibility
-- feat(compat): one documented compatibility layer, probed by capability
-- fix(compat): own our settings namespace so disable/enable works on DSH 0.2
-- test: cover the settings compatibility matrix and settings contract
-
-## Unreleased
-
 - fix(compat): desktop 0.2.0-rc.x rejects plugin activation with "strict codec has no create() factory" (#4) — strict codecs now carry BOTH the 0.1.x shape (`schema.parse`) and the 0.2.x shape (`create()` factory returning a parser), so one bundle activates on either runtime
 - fix(compat): disable/enable was structurally broken on DSH 0.2.x desktop — `Config field "disabledProviders" is not volatile`. `llm-pi-ai` declares only `providers` as a volatile field, and 0.2's settings service refuses (and cannot even serve) any other key there, so parking disabled providers in `llm-pi-ai.disabledProviders` could never work. The plugin now declares its OWN settings section (`Config` with every owned key volatile) and writes providers to `llm-pi-ai` / parked profiles to that section. The same split also moves `routes`, `composites`, `routeStats`, `uiPrefs`, `routerRetry`, `modelCatalog`, `localGateway` and `modelCapabilities` out of the foreign-key squat, so those features stop being silently unreadable on 0.2.
 - fix(compat): upgrading from an older version no longer hides existing configuration. Older versions kept that state as foreign keys inside `llm-pi-ai`, and readers now resolve it from the plugin's own section, so `migrateOwnedState` (awaited at the top of `apply`) copies every owned key across and then rewrites `llm-pi-ai` holding provider data only — leaving keys this plugin does not own untouched. Nothing is lost and no user action is required.
