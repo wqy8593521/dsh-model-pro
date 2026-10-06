@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import vm from 'node:vm'
 import assertStrict from 'node:assert/strict'
+import zReal from '@deepseek-ai/schemastery'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const HOST_BUNDLE = path.join(__dirname, '..', 'dist', 'host.js')
@@ -25,15 +26,31 @@ const HOST_BUNDLE = path.join(__dirname, '..', 'dist', 'host.js')
 // section, replace() persists it (null-proto objects from makeHostPlain are
 // JSON-safe and stored directly).
 // ---------------------------------------------------------------------------
+/** Two settings namespaces: the llm provider section, and this plugin's OWN
+ * section — where parked `disabledProviders` now lives, because `llm-pi-ai`'s
+ * schema declares only `providers` and DSH 0.2 refuses any other key there. */
+const OWN_NS = 'dsh-model-pro'
+
 function createSettings(initialDocument) {
   let doc = structuredClone(initialDocument)
+  let own = {}
   return {
     doc: () => doc,
-    get: (ns) => (ns === 'llm-pi-ai' ? doc : undefined),
+    own: () => own,
+    get: (ns) => (ns === 'llm-pi-ai' ? doc : ns === OWN_NS ? own : undefined),
     writable: true,
+    // Mirrors dsh-settings' namespace write: keys the writer MENTIONS are taken
+    // from the patch wholesale (so deleting `providers.my-gw.apiKeyEnc` really
+    // deletes it), while keys it never mentions are preserved (operator notes).
     replace: async (ns, section) => {
-      if (ns !== 'llm-pi-ai') throw new Error('unexpected ns')
-      doc = section
+      const apply = (current) => {
+        const next = structuredClone(current)
+        for (const [k, v] of Object.entries(section)) next[k] = structuredClone(v)
+        return next
+      }
+      if (ns === 'llm-pi-ai') { doc = apply(doc); return }
+      if (ns === OWN_NS) { own = apply(own); return }
+      throw new Error(`unexpected ns: ${ns}`)
     },
   }
 }
@@ -48,6 +65,7 @@ function createSettings(initialDocument) {
 function createLateSettings(store) {
   let registered = false
   const fire = (ns) => { for (const fn of listeners['settings/updated'] || []) try { fn(ns, 1) } catch { /* ignore */ } }
+  const own = () => store.own()
   return {
     get registered() { return registered },
     register: () => {
@@ -59,6 +77,7 @@ function createLateSettings(store) {
       if (ns === 'llm-pi-ai' && !registered) return undefined
       return store.get(ns)
     },
+    own,
     get writable() { return store.writable },
     replace: (ns, section) => store.replace(ns, section),
   }
@@ -170,16 +189,44 @@ function createLlm(log = []) {
 // ---------------------------------------------------------------------------
 const kebabToCamel = (s) => s.replace(/-([a-z])/g, (_, c) => c.toUpperCase())
 
+/**
+ * Real schemastery schemas handed to the sandbox.
+ *
+ * The bundle's `Config` is built at module scope, so the vm needs a `z`. Rather
+ * than fake the builder (which would make `meta.volatile` a fiction), each
+ * shimmed builder returns one of these REAL schemas — the same shape the host
+ * declares, so `isVolatilePath` is exercised against genuine metadata.
+ */
+const volatile = (schema) => schema.extra('volatile', true)
+const realDictSchema = volatile(zReal.dict(zReal.any()).default({}))
+const realAnySchema = zReal.any()
+const realBooleanSchema = zReal.boolean()
+const realConfigSchema = zReal.object({ disabledProviders: realDictSchema })
+
 async function loadHost() {
   let code = readFileSync(HOST_BUNDLE, 'utf8')
-  // Strip the ESM import (stubbed below) and the trailing `export { ... }`.
+  // Strip the ESM imports (stubbed below) and the trailing `export { ... }`.
   code = code.replace(/^\s*import\s+\{[^}]*\}\s+from\s+["']@deepseek-ai\/dsh-typert-protocol["'];?/m, '')
+  code = code.replace(/^\s*import\s+z\s+from\s+["']@deepseek-ai\/schemastery["'];?/m, '')
   code = code.replace(/export\s*\{[\s\S]*?\};?\s*$/m, '')
 
   const captured = []
+
+  // The bundle builds its `Config` schema at module scope against the REAL
+  // schemastery (so `meta.volatile` is genuine). Only the two schema builders
+  // it uses are shimmed, and each returns a pre-built real schema.
+  const schemaStub = {
+    object: () => realConfigSchema,
+    dict: () => realDictSchema,
+    any: () => realAnySchema,
+    boolean: () => realBooleanSchema,
+  }
+  const z = Object.assign(() => realAnySchema, schemaStub)
+
   const sandbox = {
     console, setTimeout, clearTimeout, Date, Promise, AbortController,
     TextEncoder, TextDecoder,
+    z, __zReal: zReal,
     // stub base: capture each runtime instance so the test can invoke methods
     TypertRemoteService: class {
       constructor(ctx) { this.ctx = ctx; captured.push(this) }
@@ -187,11 +234,11 @@ async function loadHost() {
   }
   sandbox.globalThis = sandbox
   const result = await vm.runInContext(
-    `(async () => { ${code}\n; return { apply, name, inject }; })()`,
+    `(async () => { ${code}\n; return { apply, name, inject, TYPERT_MANIFEST, Config }; })()`,
     vm.createContext(sandbox),
     { filename: 'model-pro-host.js' },
   )
-  return { apply: result.apply, runtimes: captured }
+  return { apply: result.apply, runtimes: captured, manifest: result.TYPERT_MANIFEST, config: result.Config }
 }
 
 function assert(cond, msg) {
@@ -243,15 +290,28 @@ const ctx = {
 }
 /** Fire every registered interval callback once (deterministic flush). */
 const tick = async () => { for (const fn of timerCallbacks) { try { await fn() } catch { /* ignore */ } } }
-const { apply, runtimes } = await loadHost()
-apply(ctx)
+const { apply, runtimes, manifest } = await loadHost()
+await apply(ctx)
+
+// Strict-codec dual-shape contract (issue #4): DSH 0.1.x runtimes consume
+// `codec.schema.parse(value)` and validate `codec.schema.parse`; DSH 0.2.x
+// (desktop 0.2.0-rc.2+) consume `codec.create().parse(value)` and REJECT
+// registration when `codec.create` is missing. Every codec must carry BOTH.
+for (const inv of manifest.invocations) {
+  for (const codec of [inv.result, ...inv.parameters.map((p) => p.codec)]) {
+    if (codec.mode === 'src-json') continue
+    assert(typeof codec.schema?.parse === 'function', `${inv.id}: codec.schema.parse present (0.1.x contract)`)
+    assert(typeof codec.create === 'function', `${inv.id}: codec.create factory present (0.2.x contract)`)
+    assert(typeof codec.create()?.parse === 'function', `${inv.id}: codec.create() returns a parser`)
+  }
+}
 
 // The RPC surface is the captured ModelProRuntime instance. Drive it by the
 // same kebab method names the client uses; each maps to a camelCase method.
 const runtime = () => runtimes[runtimes.length - 1]
 const P = async (name, args) => runtime()[kebabToCamel(name)](args || {})
 const provs = () => store.doc().providers || {}
-const dis = () => store.doc().disabledProviders || {}
+const dis = () => store.own().disabledProviders || {}
 const gatewayRoute = () => webRoutes.find((x) => x.path === '/model-pro/v1')
 async function gatewayRequest({ method = 'GET', path = '/model-pro/v1/health', key = '', body } = {}) {
   const chunks = body === undefined ? [] : [new TextEncoder().encode(JSON.stringify(body))]
@@ -287,7 +347,7 @@ assert(http.status === 404, 'disabled gateway is indistinguishable from a missin
 r = await P('set-local-gateway-prefs', { enabled: true, generateKey: true })
 const gatewayKey = r.temporaryKey
 assert(r.ok && r.prefs.enabled === true && r.hasTemporaryKey === true && typeof gatewayKey === 'string' && gatewayKey.length >= 16, 'gateway enables, persists, and reveals generated key once')
-assert(store.doc().localGateway?.enabled === true && !JSON.stringify(store.doc()).includes(gatewayKey), 'gateway preference persists but plaintext key never enters settings')
+assert(store.own().localGateway?.enabled === true && !JSON.stringify(store.own()).includes(gatewayKey), 'gateway preference persists but plaintext key never enters settings')
 assert(credStore.get('DSH_MODEL_PRO_LOCAL_GATEWAY_KEY') === gatewayKey, 'gateway key persists in the host credentials service')
 r = await P('get-local-gateway-prefs')
 assert(r.hasTemporaryKey === true && r.temporaryKey === undefined, 'ordinary reads never reveal the active key')
@@ -315,7 +375,7 @@ assert(chunks.some((c) => c.choices?.[0]?.delta?.content === 'pong'), 'stream fo
 assert(chunks.at(-1).choices[0].finish_reason === 'stop' && chunks.at(-1).usage, 'stream sends terminal finish reason and usage')
 // A fresh plugin fiber drops only its cache. It must resolve the same bearer
 // secret from credentials and keep the already-enabled endpoint operational.
-apply(ctx)
+await apply(ctx)
 r = await P('get-local-gateway-prefs')
 assert(r.hasTemporaryKey === true && r.temporaryKey === undefined, 'reinstall reloads persisted gateway key without revealing it')
 http = await gatewayRequest({ key: gatewayKey })
@@ -476,6 +536,8 @@ r = await P('delete-provider', { route: 'my-gw' })
 assert(!r.ok, 'delete missing route rejected')
 
 // --- section foreign keys are preserved across every write ---
+// (`llm-pi-ai` is written with `providers` alone, so anything else the operator
+// keeps there survives untouched instead of being rewritten from a stale read.)
 assert(store.doc().sectionNote && store.doc().sectionNote.hello === 1, 'section foreign keys preserved across writes')
 
 // --- disabled marker lives ON THE PROVIDER PROFILE (not only the dict) ---
@@ -497,7 +559,7 @@ r = await P('list-providers')
 assert(r.providers.find((x) => x.route === 'flag-gw').disabled === true, 'still shown disabled (marker) after restore')
 
 // reinstall: a fresh apply re-parks marked providers -> same disabled state
-apply(ctx)
+await apply(ctx)
 await new Promise((res) => setTimeout(res, 5))
 assert(Object.hasOwn(dis(), 'flag-gw') && dis()['flag-gw'].disabled === true, 'reinstall re-parks the marked provider')
 r = await P('list-providers')
@@ -523,10 +585,11 @@ assert(r.providers.find((x) => x.route === 'flag-gw').disabled === true, 'reinst
     effect: ctx.effect,
   }
   const cleanupsBeforeLate = cleanups.length
-  apply(lateCtx)
+  await apply(lateCtx)
   // Eager attempt ran against an unregistered section -> must NOT have parked yet.
   const lateDoc = () => lateStore.doc()
-  assert(!Object.hasOwn(lateDoc().disabledProviders || {}, 'lateGw'), 'eager park no-ops while the section is unregistered')
+  const lateOwn = () => lateStore.own()
+  assert(!Object.hasOwn(lateOwn().disabledProviders || {}, 'lateGw'), 'eager park no-ops while the section is unregistered')
   assert(
     Object.hasOwn(lateDoc().providers || {}, 'lateGw') && lateDoc().providers.lateGw.disabled === true,
     'marked provider still sits in providers before pi-ai loads',
@@ -538,11 +601,11 @@ assert(r.providers.find((x) => x.route === 'flag-gw').disabled === true, 'reinst
   await new Promise((res) => setTimeout(res, 5))
 
   assert(
-    Object.hasOwn(lateDoc().disabledProviders || {}, 'lateGw') && lateDoc().disabledProviders.lateGw.disabled === true,
+    Object.hasOwn(lateOwn().disabledProviders || {}, 'lateGw') && lateOwn().disabledProviders.lateGw.disabled === true,
     'settings/updated re-park parks the marked provider once the namespace commits',
   )
   assert(!Object.hasOwn(lateDoc().providers || {}, 'lateGw'), 'parked provider removed from providers after late registration')
-  assert(lateDoc().noteK === 1, 'foreign section keys survive the late re-park write')
+  assert(lateOwn().noteK === undefined && lateDoc().noteK === 1, 'foreign section keys survive the late re-park write')
 
   // Restore shared harness state: tear the second fiber down the way Cordis
   // would on unload — run the effects it registered (LIFO), which releases its
@@ -554,7 +617,7 @@ assert(r.providers.find((x) => x.route === 'flag-gw').disabled === true, 'reinst
   for (let i = lateCleanups.length - 1; i >= 0; i--) await Promise.resolve(lateCleanups[i]())
   runtimes.pop()
   listeners['settings/updated'] = []
-  apply(ctx)
+  await apply(ctx)
 }
 
 // enable: clears the marker and returns it to providers
@@ -571,8 +634,8 @@ r = await P('set-route', { alias: 'empty', strategy: 'priority', targets: [] })
 assert(!r.ok, 'empty targets rejected')
 r = await P('list-routes')
 assert(r.ok && r.routes.auto && r.routes.auto.strategy === 'priority' && r.routes.auto.targets[0].provider === 'opencode-go' && r.routes.auto.targets[0].model === 'deepseek-v4-flash', 'list-routes returns route combo: ' + JSON.stringify(r.routes))
-assert(store.doc().routes && store.doc().routes.auto && store.doc().routes.auto.targets[0].model === 'deepseek-v4-flash', 'routes persisted under the section foreign key')
-assert(store.doc().sectionNote && store.doc().sectionNote.hello === 1, 'route write preserves other section keys')
+assert(store.own().routes && store.own().routes.auto && store.own().routes.auto.targets[0].model === 'deepseek-v4-flash', 'routes persisted in the plugin-owned section')
+assert(store.doc().sectionNote && store.doc().sectionNote.hello === 1, 'route write preserves other llm-pi-ai section keys')
 
 const rreg = llm.registrations.find((x) => x.providers.includes('router'))
 assert(rreg && rreg.adapter, 'router adapter registered for route [router]')
@@ -930,7 +993,7 @@ await P('delete-provider', { route: 'reason-gw' })
 // deleting a route must work even when the resolved section object is frozen
 // (regression: readRoutes used to return the frozen settings object, so
 // `delete routes['0']` threw "Cannot delete property of [object Object]")
-Object.freeze(store.doc().routes)
+Object.freeze(store.own().routes)
 r = await P('delete-route', { alias: 'auto' })
 assert(r.ok && !(await P('list-routes')).routes.auto, 'delete-route removes mapping on frozen section')
 r = await P('delete-route', { alias: 'dead' })
@@ -1099,8 +1162,8 @@ await P('set-route', { alias: 'auto-camel', strategy: 'priority', targets: [{ pr
 // the "统计为空 / 尾标不会持久化" regression. ---
 {
   await tick() // debounced flush fires the persisted snapshot
-  const snap = store.doc().routeStats
-  assert(snap && typeof snap === 'object', 'routeStats snapshot persisted to settings: ' + JSON.stringify(Object.keys(store.doc())))
+  const snap = store.own().routeStats
+  assert(snap && typeof snap === 'object', 'routeStats snapshot persisted to settings: ' + JSON.stringify(Object.keys(store.own())))
   assert(snap.byTarget && Object.keys(snap.byTarget).some((k) => k.includes('camelgw')), 'aggregate stats persisted: ' + JSON.stringify(snap.byTarget && Object.keys(snap.byTarget)))
   assert(Array.isArray(snap.logs) && snap.logs.some((e) => e.route === 'auto-camel'), 'request-log tail persisted: ' + JSON.stringify(snap.logs && snap.logs.length))
 
@@ -1109,12 +1172,12 @@ await P('set-route', { alias: 'auto-camel', strategy: 'priority', targets: [{ pr
   // tearing the plugin down. Settings survive exactly as they do on reinstall.
   const unloadBatch = cleanups.splice(0, cleanups.length)
   for (let i = unloadBatch.length - 1; i >= 0; i--) await Promise.resolve(unloadBatch[i]())
-  assert(Array.isArray(store.doc().routeStats?.logs) && store.doc().routeStats.logs.some((e) => e.route === 'auto-camel'), 'unload awaited final request-log persistence')
+  assert(Array.isArray(store.own().routeStats?.logs) && store.own().routeStats.logs.some((e) => e.route === 'auto-camel'), 'unload awaited final request-log persistence')
 
   // Simulate a page refresh / host restart: a brand-new fiber (fresh apply)
   // must re-hydrate the recorder + log ring from that snapshot rather than
   // starting blank.
-  apply(ctx)
+  await apply(ctx)
   const rs2 = await P('get-route-stats')
   assert(rs2.byTarget && Object.keys(rs2.byTarget).some((k) => k.includes('camelgw')), 're-applied fiber re-hydrates stats: ' + JSON.stringify(Object.keys(rs2.byTarget || {})))
   const lg2 = await P('list-request-logs', { sessionId: 'sess-camel' })
@@ -1128,7 +1191,7 @@ r = await P('set-ui-prefs', { prefs: { showRouteBadge: false } })
 assert(r.ok && r.prefs.showRouteBadge === false, 'set-ui-prefs flips the badge off')
 r = await P('get-ui-prefs')
 assert(r.prefs.showRouteBadge === false, 'get-ui-prefs reflects the saved value')
-assert(log.section().uiPrefs && typeof log.section().uiPrefs === 'object', 'uiPrefs persisted as a section foreign key: ' + JSON.stringify(Object.keys(log.section())))
+assert(store.own().uiPrefs && typeof store.own().uiPrefs === 'object', 'uiPrefs persisted in the plugin-owned section: ' + JSON.stringify(Object.keys(store.own())))
 r = await P('list-routes')
 assert(r.ok && r.routes && Object.keys(r.routes).length >= 1, 'uiPrefs write preserved sibling keys (routes intact)')
 r = await P('set-ui-prefs', { prefs: { showRouteBadge: true } })
@@ -1148,7 +1211,7 @@ assert(rreg.adapter.providerRetryPolicy('router') === undefined, 'a zero budget 
 
 r = await P('set-retry-prefs', { prefs: { maxRetries: 3 } })
 assert(r.ok && r.prefs.maxRetries === 3, 'set-retry-prefs stores the budget: ' + JSON.stringify(r))
-assert(log.section().routerRetry && log.section().routerRetry.maxRetries === 3, 'budget persisted as a section foreign key: ' + JSON.stringify(Object.keys(log.section())))
+assert(store.own().routerRetry && store.own().routerRetry.maxRetries === 3, 'budget persisted in the plugin-owned section: ' + JSON.stringify(Object.keys(store.own())))
 r = await P('list-routes')
 assert(r.ok && r.routes && Object.keys(r.routes).length >= 1, 'retry write preserved sibling keys (routes intact)')
 
@@ -1650,7 +1713,7 @@ await P('delete-provider', { route: 'comp-b' })
     effect(fn) { const cleanup = fn(); if (typeof cleanup === 'function') capCleanups.push(cleanup) },
   }
   const capHost = await loadHost()
-  capHost.apply(capCtx)
+  await capHost.apply(capCtx)
   const call = (method, args = {}) => capHost.runtimes.at(-1)[kebabToCamel(method)](args)
   const beforeRead = JSON.stringify(capStore.doc())
   let result = await call('get-provider', { route: 'gateway' })
@@ -1690,14 +1753,14 @@ await P('delete-provider', { route: 'comp-b' })
   }
   await call('toggle-provider', { route: 'gateway', enabled: false })
   await call('apply-models', { route: 'gateway', models: [{ id: 'known-image', input: ['text'] }], mode: 'merge' })
-  assert(capStore.doc().disabledProviders.gateway.models.find((entry) => entry.id === 'known-image').input.join() === 'text', 'disabled provider capability remains editable')
+  assert(capStore.own().disabledProviders.gateway.models.find((entry) => entry.id === 'known-image').input.join() === 'text', 'disabled provider capability remains editable')
   assert(catalogCalls.length === 2, 'catalog identity index is reused without repeated discovery')
 
   const identifyStore = createSettings({ providers: { gateway: { defaultInput: ['text'], models: [
     { id: 'known-image', input: [] }, { id: 'manual', input: ['text'] }, { id: 'unknown-vision-name', input: [] },
   ] } } })
   const identifyHost = await loadHost()
-  identifyHost.apply({ ...capCtx, get: (name) => name === 'settings' ? identifyStore : name === 'llm' ? capLlm : undefined })
+  await identifyHost.apply({ ...capCtx, get: (name) => name === 'settings' ? identifyStore : name === 'llm' ? capLlm : undefined })
   const identifyRpc = identifyHost.runtimes.at(-1)
   const identifyArgs = { route: 'gateway', mode: 'identify', models: identifyStore.doc().providers.gateway.models.map(({ id }) => ({ id })) }
   result = await identifyRpc.applyModels(identifyArgs)
@@ -1726,7 +1789,7 @@ await P('delete-provider', { route: 'comp-b' })
   assert(result.capabilitySummary.preserved === 1 && result.capabilitySummary.updated === 0 && result.capabilitySummary.rechecked === 0, 'recorded manual text is protected against re-identification')
   assert((await identifyRpc.getProvider({ route: 'dsGateway' })).models[0].capabilitySource === 'manual', 'manual origin survives reads')
   await identifyRpc.deleteProvider({ route: 'dsGateway' })
-  assert(!Object.hasOwn(identifyStore.doc().modelCapabilities, 'dsGateway'), 'provider deletion removes its capability records')
+  assert(!Object.hasOwn(identifyStore.own().modelCapabilities, 'dsGateway'), 'provider deletion removes its capability records')
   await identifyRpc.createProvider({ route: 'dsGateway', api: 'openai-completions', baseURL: 'https://ds-fixture.invalid/v1' })
   await identifyRpc.applyModels({ route: 'dsGateway', mode: 'replace', models: [{ id: 'deepseek-v4.1-flash' }] })
   assert((await identifyRpc.getProvider({ route: 'dsGateway' })).models[0].input.includes('image'), 'same-name provider recreation does not inherit a previous manual text lock')
@@ -1735,10 +1798,10 @@ await P('delete-provider', { route: 'comp-b' })
   result = await identifyRpc.applyModels({ route: 'oneMapping', mode: 'merge', models: [{ id: 'unlisted-local', inputMode: 'manual', input: ['text', 'image'] }] })
   assert(result.ok, 'single origin record manual seed succeeds')
   result = await identifyRpc.applyModels({ route: 'oneMapping', mode: 'merge', models: [{ id: 'unlisted-local', requestModel: null }] })
-  assert(result.ok && !identifyStore.doc().providers.oneMapping.models[0].requestModel && !identifyStore.doc().modelCapabilities.oneMapping, 'clearing the last wire-bound capability source does not trigger a false concurrent-edit error')
+  assert(result.ok && !identifyStore.doc().providers.oneMapping.models[0].requestModel && !identifyStore.own().modelCapabilities.oneMapping, 'clearing the last wire-bound capability source does not trigger a false concurrent-edit error')
   await identifyRpc.applyModels({ route: 'oneMapping', mode: 'merge', models: [{ id: 'unlisted-local', inputMode: 'manual', input: ['text'] }] })
   result = await identifyRpc.applyModels({ route: 'oneMapping', mode: 'merge', models: [{ id: 'unlisted-local', inputMode: 'auto', input: null }] })
-  assert(result.ok && !identifyStore.doc().modelCapabilities.oneMapping && !identifyStore.doc().providers.oneMapping.models[0].input, 'automatic reset can remove the last manual source when the model is unknown')
+  assert(result.ok && !identifyStore.own().modelCapabilities.oneMapping && !identifyStore.doc().providers.oneMapping.models[0].input, 'automatic reset can remove the last manual source when the model is unknown')
 
   let ready = false
   let failCatalog = true
@@ -1748,7 +1811,7 @@ await P('delete-provider', { route: 'comp-b' })
   }
   const retryStore = createSettings({ providers: { retry: { models: [{ id: 'known-image' }] } } })
   const retryHost = await loadHost()
-  retryHost.apply({ ...capCtx, get: (name) => name === 'settings' ? retryStore : name === 'llm' ? retryLlm : undefined })
+  await retryHost.apply({ ...capCtx, get: (name) => name === 'settings' ? retryStore : name === 'llm' ? retryLlm : undefined })
   const retryRpc = retryHost.runtimes.at(-1)
   assert(!(await retryRpc.getProvider({ route: 'retry' })).models[0].input, 'pre-ready empty catalog stays unknown')
   ready = true

@@ -16,3 +16,6 @@ pnpm-lock.yaml
 
 # Local draft: linux.do forum post (not part of the project)
 /docs/linuxdo-post.md
+
+# Throwaway bundles written by scripts/run-node-test.mjs
+/.tmp-tests/
