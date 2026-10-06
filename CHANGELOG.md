@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.0.1 — 2026-10-06
+
+- docs: describe the plugin-owned settings section and DSH 0.1/0.2 compatibility
+- feat(compat): one documented compatibility layer, probed by capability
+- fix(compat): own our settings namespace so disable/enable works on DSH 0.2
+- test: cover the settings compatibility matrix and settings contract
+
 ## Unreleased
 
 - fix(compat): desktop 0.2.0-rc.x rejects plugin activation with "strict codec has no create() factory" (#4) — strict codecs now carry BOTH the 0.1.x shape (`schema.parse`) and the 0.2.x shape (`create()` factory returning a parser), so one bundle activates on either runtime

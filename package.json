@@ -1,6 +1,6 @@
 {
   "name": "dsh-model-pro",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Model Pro — DSH plugin for llm-pi-ai provider lifecycle: create/edit, custom headers, enable/disable with uninstall-restore safety, smart routing, composites, observability, and per-model connectivity tests",
   "type": "module",
   "main": "dist/host.js",
