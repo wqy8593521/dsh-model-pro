@@ -13,7 +13,7 @@
 
 ### 提供商管理
 - **提供商 CRUD** — 新建（引导式 3 步向导）、编辑、删除，卡片式列表带状态色条（绿=启用 / 琥珀=禁用）。
-- **启用 / 禁用** — 一键切换。禁用的提供商会移入 `disabledProviders`，从模型选择器中隐藏，但配置完整保留。
+- **启用 / 禁用** — 一键切换。被禁用的提供商会移出 `llm-pi-ai.providers`（因此从模型选择器中消失），完整档案寄存在本插件自有分区，配置一字不丢。
 - **字段编辑** — 逐项编辑 `baseURL`、`api` 协议、`apiKeyEnv`、`displayName`（概览页附「就绪检查」清单）。
 - **自定义请求头** — 按提供商增删改 HTTP 请求头（`authorization` / `api-key` 由适配器自动填充，无需手填）。
 
@@ -41,7 +41,7 @@
 - **对话提供商徽章（可开关）** — 开启后，每个回合完成时会在其下方显示智能路由 / 组合**实际选中并服务该回合**的目标（`provider/model`），发生自动切换时标注「已无感切换」；在「智能路由 → 观测台」用「对话下方显示实际提供商」开关控制，偏好持久化保存。
 
 ### 卸载安全（零数据丢失）
-- **卸载不丢数据** — 当本插件被卸载或禁用时，会自动把 `disabledProviders` 中的每个提供商**原样还原**回 `providers`，避免模型配置滞留在只有本插件认识的外来键中。详见下文[工作原理](#-工作原理)。
+- **卸载不丢数据** — 当本插件被卸载或禁用时，会自动把自有分区里寄存的每个提供商**原样还原**回 `providers`，避免模型配置滞留在只有本插件认识的存储中。详见下文[工作原理](#-工作原理)。
 
 ---
 
@@ -124,7 +124,7 @@ dsh plugin --profile web remove dsh-model-pro && dsh plugin --profile web add np
 dsh plugin --profile web remove dsh-model-pro
 ```
 
-**卸载是安全的**：插件在卸载 / 禁用时会执行 fiber 清理钩子，把 `disabledProviders` 里的每个提供商（模型、请求头、凭据全部保留）还原回 `providers`。因此**不会有任何提供商或模型配置丢失**。加密 API Key 的主密钥存放在 DSH 凭据服务中、与插件解耦，卸载不会删除它——重装后旧密文仍可正常解密。
+**卸载是安全的**：插件在卸载 / 禁用时会执行 fiber 清理钩子，把自有分区里寄存的每个提供商（模型、请求头、凭据全部保留）还原回 `providers`。因此**不会有任何提供商或模型配置丢失**。加密 API Key 的主密钥存放在 DSH 凭据服务中、与插件解耦，卸载不会删除它——重装后旧密文仍可正常解密。
 
 > 若只想临时停用而保留定义，用禁用而非卸载即可；两者都会触发同样的还原逻辑。
 
@@ -148,9 +148,36 @@ dsh plugin --profile web remove dsh-model-pro
 ## 🔍 工作原理
 
 ### 禁用 & 卸载还原
-禁用会把提供商配置从 `llm-pi-ai.providers` 移入 `llm-pi-ai.disabledProviders`。由于 `llm-pi-ai` 适配器只解析 `providers` 字典，被禁用的提供商会从模型选择器中消失；schemastery 的非严格对象解析器会在设置校验中保留这个未知键。
+禁用会把提供商档案从 `llm-pi-ai.providers` 移入**本插件自有分区**（`dsh-model-pro`，由 `Config` 声明）。`llm-pi-ai` 适配器只解析 `providers`，所以被禁用的提供商会从模型选择器中消失——这是"禁用"真正生效的机制。
 
-因为 `disabledProviders` 是 schema 外来键，Host 半在 fiber 清理时（插件被卸载**或**禁用）执行禁用操作的逆运算：把每个被禁用的提供商连同完整档案还原回 `providers`。启用中的提供商不受影响。
+Host 半在 fiber 清理时（插件被卸载**或**禁用）执行逆运算：把每个被禁用的提供商连同完整档案还原回 `providers`。启用中的提供商不受影响。因此**不会有任何提供商或模型配置丢失**。
+
+> **为什么不再用 `llm-pi-ai.disabledProviders`？**
+> 早期版本把禁用状态寄存在 `llm-pi-ai` 这个**别的插件**的 section 里，作为 schema 未声明的外部键。这在 DSH 0.1.x 上能工作（校验宽松），但在 0.2.x 上是结构性不可用的：
+>
+> - 写入被拒 —— 0.2 逐键校验目标 section 的每个键是否落在 schema 的 `volatile()` 之下，未声明的键直接抛 `Config field "X" is not volatile` 并**拒绝整次写入**；
+> - 读取不可见 —— `describe()` 会把 section 投影成 schema 已声明的字段，外部键连读都读不到。
+>
+> 更糟的是它会**连带打断 DSH 的配置迁移**：老的 `settings.yaml` 改名成 `.imported` 后逐 section 导入，`llm-pi-ai` 里只要残留这个外部键，整个 section 的导入就会被放弃（只留一条 warning），表现为"升级后模型全没了"。
+>
+> 现在改用插件自有分区：`llm-pi-ai` 只承载 `providers`，其余状态全部归位。旧版本遗留在 `llm-pi-ai` 里的键会在启动时自动搬入自有分区。
+
+### DSH 版本兼容（0.1.x / 0.2.x）
+所有设置读写都经过单一兼容层 [`src/host/compat.ts`](src/host/compat.ts)，该文件是唯一允许调用 settings 服务的模块（由 `tests/host.architecture.mjs` 机械保证，其他文件直接调用即测试失败）。它遵循四条规则：
+
+1. **按能力探测，不按版本号** —— 用 `get(ns)` 与 `describe()` 两个独立能力判定服务形态：
+   | 形态 | 特征 | 来源 |
+   |------|------|------|
+   | `raw` | `get(ns)` 返回原始 section；`replace()` 接受任意键 | DSH 0.1.x |
+   | `descriptor` | 无 `get`；`describe()` 返回投影后的 section；写入受 `meta.volatile` 约束 | DSH 0.2.x |
+   | `unknown` | 两者都没有 | 比本插件更新的 DSH |
+2. **每个命名空间只有一条写路径** —— `writeLLMProviders`（只写 `providers`）与 `writeOwnedSection`（本插件自有状态）。
+3. **读不到的东西绝不销毁** —— `descriptor` 会投影掉未声明的键，因此旧数据迁移只搬它能看见的部分，其余原样留在原处。
+4. **明确失败，绝不静默降级** —— 启动时执行 `selfCheck()`：往自有分区写入声明过的探针字段再读回，真实证明"读得到、写得住"。不通过会记录一条可诊断的告警，而不是让用户面对一个空列表。`unknown` 形态会明确报告，不会被猜测为 0.2。
+
+**实测覆盖**：DSH `0.1.7-rc.2`、`0.2.0-rc.2`、`0.2.1-alpha.1` 上均启动并完成自检读写往返。CI 测试矩阵见 `tests/host.matrix.mjs` 与 `tests/host.compat-layer.mjs`。
+
+> `0.1.x` 仍在支持中，但该兼容路径计划在 **v3** 移除；插件在 0.1 运行时启动时会记录一条弃用提示。
 
 ### 密钥加密
 提供商 API Key 存于两处：**权威副本**在 DSH `credentials` 服务（`llm-pi-ai` 请求时解析）；**静态快照**为 `profile.apiKeyEnc` 下的 AES-256-GCM 密文。随机 AES 主密钥仅生成一次并存入凭据服务，**永不重新生成**，保证重装后旧密文仍可解密。沙箱缺少 WebCrypto 时回退到打包的纯 JS `@noble/ciphers`。
@@ -189,7 +216,10 @@ src/
 ├── host/
 │   ├── index.ts              # apply(ctx) — Typert 注册 + 路由/组合/健康/观测装配
 │   ├── service.ts            # ModelProRuntime extends TypertRemoteService
-│   ├── utils.ts              # makeHostPlain、readProviders、writeSection
+│   ├── compat.ts             # 兼容层：按能力判定 settings 形态 + 自检 + 两个命名空间写入
+│   ├── settings.ts           # 自有分区读写、禁用停车位、旧数据迁移
+│   ├── config.ts             # 自有分区 schema（Config）与自有 section 访问器
+│   ├── utils.ts              # makeHostPlain 与基于兼容层的读写外观
 │   ├── crypto.ts             # AES-256-GCM 密钥加解密（凭据服务主密钥）
 │   ├── lifecycle.ts          # fiber 清理钩子 — 卸载时还原禁用提供商
 │   ├── router.ts             # 智能路由分发引擎（router / composite 适配器）
