@@ -9,10 +9,12 @@
  * Static-mounted plugins export `apply` (+ optional `name` / `inject`); the
  * loader imports this module and calls apply(ctx).
  *
- * Disabled providers are moved to a separate `disabledProviders` dict so the
- * llm-pi-ai adapter (which only reads `providers`) stops registering them.
- * Because `disabledProviders` is a foreign key only this plugin understands,
- * the host also restores them to `providers` on unload — no model data is lost.
+ * Disabled providers are removed from `llm-pi-ai.providers` — the dict the
+ * llm-pi-ai adapter resolves active routes from — and parked in THIS plugin's
+ * OWN settings section. They cannot live in `llm-pi-ai` itself: that schema
+ * declares only `providers`, and DSH 0.2.x refuses an undeclared destination key
+ * with `Config field "disabledProviders" is not volatile`. The host restores
+ * them to `providers` on unload, so no model data is lost.
  */
 
 import type { HostCtx } from './utils'
@@ -24,9 +26,26 @@ import { restoreDisabledOnUnload, parkDisabledProviders } from './lifecycle'
 import { initHealthTracker, resetHealthSingleton } from './health'
 import { resetObservabilitySingletons, hydrateObservability, persistStats, setStatsPersistRequester, resetStatsPersistRequester } from './statsStore'
 import { registerLocalGateway, resetLocalGatewayRuntime } from './localGateway'
+import { Config, bindConfigAccessor } from './config'
+import { migrateOwnedState, warnIfLegacyArm } from './settings'
+import { selfCheck } from './compat'
 
 /** Loader entry id / client bundle id. */
 export const name = PACKAGE
+
+/**
+ * This plugin's OWN settings section, declared as a schemastery schema.
+ *
+ * Exporting `Config` is what registers the `dsh-model-pro` namespace and makes
+ * it writable on DSH 0.2.x, whose settings service refuses any destination key
+ * that is not below a `volatile()` node. Owned state (the parked
+ * `disabledProviders` bag) lives HERE rather than as an undeclared foreign key
+ * inside `llm-pi-ai`, whose schema declares only `providers`.
+ *
+ * Exported after `name`/`inject` for readability; the loader reads it off the
+ * module namespace and wires it to `entry.fiber.runtime.Config`.
+ */
+export { Config }
 
 /** Hard dependencies. `typert` is the RPC registry we register into. `settings`
  * and `llm` gate WHEN apply runs: cordis parks the fiber until every declared
@@ -39,8 +58,40 @@ export const name = PACKAGE
  * them as fully active routes again (the marker means nothing to it). */
 export const inject = ['typert', 'settings', 'llm', 'webServer']
 
-export function apply(ctx: HostCtx) {
+export async function apply(ctx: HostCtx) {
   const c = ctx as any
+
+  // Bind this plugin's own settings section so handlers can read owned state
+  // (the parked `disabledProviders` bag) with nothing but the cordis context.
+  // The `settings` inject above guarantees the service exists when apply runs.
+  bindConfigAccessor(c.get('settings'))
+
+  // Tell a 0.1 runtime — once — that this compatibility path is on a clock. The
+  // plugin keeps working; the notice exists so the removal is not a surprise.
+  warnIfLegacyArm(ctx, c.get('settings'))
+
+  // Prove, against the live service, that configuration reads and writes
+  // actually work — rather than presenting an empty provider list as truth.
+  // See src/host/compat.ts RULE 4. Awaited: migration below depends on it.
+  {
+    const settings = c.get('settings')
+    const report = await selfCheck(settings, name)
+    if (!report.operational) {
+      try {
+        ;(c.get('logger') as any)?.warn?.(
+          `dsh-model-pro: configuration is NOT operational (${report.code}) — ${report.detail}. ` +
+            `Providers, routes and preferences may appear empty until this is resolved.`,
+        )
+      } catch { /* a missing logger must never break activation */ }
+    }
+  }
+
+  // Pull owned state an OLDER version left as foreign keys inside `llm-pi-ai`
+  // into our own section BEFORE anything reads it — `registerLocalGateway`
+  // below snapshots its prefs at apply time, so migrating later would come too
+  // late for it. Awaited because several readers snapshot synchronously here,
+  // and because a concurrent `writeSections` would race its cleanup write.
+  await migrateOwnedState(ctx)
 
   // Mount the RPC service and register its strict manifest with the Gateway.
   new ModelProRuntime(ctx)
