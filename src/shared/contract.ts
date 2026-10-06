@@ -63,29 +63,45 @@ export const METHODS: ReadonlyArray<readonly [string, string]> = [
 /** Client-facade kebab → camel map. */
 export const METHOD_MAP: Record<string, string> = Object.fromEntries(METHODS)
 
-// --- strict codecs (only `parse` is consumed by the typert boundary) --------
-const schema = (parse: (v: unknown) => unknown) => ({ parse })
+// --- strict codecs -----------------------------------------------------------
+// Runtime compatibility: the typert boundary's strict-codec contract changed
+// between DSH 0.1.x and 0.2.x (desktop 0.2.0-rc.2+):
+//   - 0.1.x registry validates `codec.schema.parse` and the gateway decodes via
+//     `codec.schema.parse(value)`;
+//   - 0.2.x registry validates `codec.create` (validateCodec) and the gateway
+//     decodes via `codec.create().parse(value)`.
+// Emit BOTH shapes from the same parse function so one bundle activates on
+// either runtime. `create` is a factory returning a fresh parser each call,
+// matching how the 0.2.x gateway invokes it.
+const parser = (parse: (v: unknown) => unknown) => ({ parse })
+
+const strictCodec = (typeSymbol: string, parse: (v: unknown) => unknown) => ({
+  mode: 'strict' as const,
+  typeSymbol,
+  schema: parser(parse),
+  create: () => parser(parse),
+})
 
 /** The single JSON object argument every method accepts (missing → {}). */
-const argsSchema = schema((v: unknown) => {
+const argsParser = (v: unknown) => {
   if (v === undefined || v === null) return {}
   if (typeof v !== 'object' || Array.isArray(v)) throw new TypeError('expected an args object')
   return v
-})
+}
 
 /** Every business method answers `{ ok, ... }`. */
-const resultEnvelopeSchema = schema((v: unknown) => {
+const resultEnvelopeParser = (v: unknown) => {
   if (v === null || typeof v !== 'object' || typeof (v as any).ok !== 'boolean') {
     throw new TypeError('expected an { ok, ... } envelope')
   }
   return v
-})
+}
 
 const argParam = {
   name: 'args',
   wire: 'args',
   source: 'json' as const,
-  codec: { mode: 'strict' as const, typeSymbol: `${PACKAGE}#Args`, schema: argsSchema },
+  codec: strictCodec(`${PACKAGE}#Args`, argsParser),
 }
 
 /** Strict invocation descriptors — what the client mounts and the host resolves. */
@@ -96,11 +112,7 @@ export const INVOCATIONS = METHODS.map(([, method]) => ({
   method,
   invocation: { kind: 'direct' as const },
   parameters: [argParam],
-  result: {
-    mode: 'strict' as const,
-    typeSymbol: `${PACKAGE}#${method}Result`,
-    schema: resultEnvelopeSchema,
-  },
+  result: strictCodec(`${PACKAGE}#${method}Result`, resultEnvelopeParser),
 }))
 
 /** Host manifest registered through ctx.typert.register. */

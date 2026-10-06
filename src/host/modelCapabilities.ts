@@ -2,7 +2,7 @@
 import { NS } from '../shared/constants'
 import type { ModelEntry, ModelInput, ModelCapabilitySource } from '../shared/types'
 import type { HostCtx, LLMService } from './utils'
-import { readProviders, readDisabled, readProfile } from './utils'
+import { readProviders, readDisabled, readProfile, readSection } from './utils'
 import { readCapabilityState, capabilityRecord, type CapabilityRecord } from './capabilityStore'
 
 interface CatalogInputs {
@@ -31,8 +31,12 @@ function declaredDefaultInput(ctx: HostCtx, route: string): ModelInput[] | undef
     return profile && typeof profile === 'object' ? normalizeModelInput((profile as Record<string, unknown>).defaultInput) : undefined
   }
   try {
-    if (typeof st.get === 'function') return fromSection(st.get(NS)) ?? normalizeModelInput(readProfile(readDisabled(st), route)?.defaultInput)
-    return undefined
+    // One accessor for both arms: `readSection` uses `get(ns)` on 0.1 and the
+    // `describe()` descriptor on 0.2, where a raw `st.get` does not exist.
+    return (
+      fromSection(readSection(st, NS)) ??
+      normalizeModelInput(readProfile(readDisabled(st), route)?.defaultInput)
+    )
   } catch { return undefined }
 }
 

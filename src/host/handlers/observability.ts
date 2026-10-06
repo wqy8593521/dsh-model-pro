@@ -11,7 +11,7 @@
 
 import type { HostCtx } from '../utils'
 import { getLogRing, getStatsRecorder, persistStats } from '../statsStore'
-import { readProviders, readDisabled } from '../utils'
+import { readProviders, readDisabled, readRoutesRootKey } from '../utils'
 import { getHealthTracker } from '../health'
 import { errorText } from '../errorText'
 
@@ -156,8 +156,11 @@ export async function probeAll(ctx: HostCtx) {
 function collectProbeTargets(ctx: HostCtx): Array<{ provider: string; model: string }> {
   const out: Array<{ provider: string; model: string }> = []
   const st = ctx.get('settings')
-  const section = (st?.get('llm-pi-ai') as Record<string, unknown> | undefined) || {}
-  const routesRaw = section.routes as Record<string, { targets?: Array<{ provider: string; model: string }> }> | undefined
+  // `routes` lives in this plugin's OWN section: it is not part of llm-pi-ai's
+  // schema, so on 0.2 it is neither writable nor even readable from there.
+  const routesRaw = (st === undefined ? undefined : readRoutesRootKey(st, 'routes')) as
+    | Record<string, { targets?: Array<{ provider: string; model: string }> }>
+    | undefined
   if (routesRaw && typeof routesRaw === 'object') {
     for (const spec of Object.values(routesRaw)) {
       if (spec && Array.isArray(spec.targets)) {
@@ -167,7 +170,9 @@ function collectProbeTargets(ctx: HostCtx): Array<{ provider: string; model: str
       }
     }
   }
-  const compositesRaw = section.composites as Record<string, { members?: string[] }> | undefined
+  const compositesRaw = (st === undefined ? undefined : readRoutesRootKey(st, 'composites')) as
+    | Record<string, { members?: string[] }>
+    | undefined
   if (compositesRaw && typeof compositesRaw === 'object') {
     const providers = readProviders(st)
     for (const spec of Object.values(compositesRaw)) {

@@ -13,6 +13,7 @@
 
 import type { HostCtx } from './utils'
 import { readProviders, readDisabled, checkWritable, writeSection } from './utils'
+import { migrateDisabledLayout } from './settings'
 
 /**
  * On unload (uninstall / disable of this plugin): every parked provider is
@@ -67,38 +68,20 @@ export async function restoreDisabledOnUnload(ctx: HostCtx) {
 }
 
 /**
- * On plugin startup: scan `providers` for profiles carrying the `disabled`
- * marker (left there by a previous unload-restore) and re-park them into
- * `disabledProviders`. The marker is the source of truth; `disabledProviders`
- * is just the parking the llm-pi-ai adapter expects.  This is what makes a
- * reinstall land in exactly the same disabled state as before the unload.
+ * On plugin startup: bring the disabled-provider layout to the 0.1/0.2-neutral
+ * form — profiles carrying our `disabled` marker are moved OUT of
+ * `llm-pi-ai.providers` (the adapter only reads that dict, so an unmarked
+ * removal is what actually disables a route) and INTO this plugin's own
+ * settings section, which both arms accept.
+ *
+ * It also recovers the legacy 0.1 location: a bag left at
+ * `llm-pi-ai.disabledProviders` is moved into our section, and any profile
+ * parked there that is missing from `providers` is put back — so an upgrade
+ * from a 0.1 install lands with every provider intact.
+ *
+ * See `src/host/settings.ts` for why the bag cannot stay in `llm-pi-ai` on 0.2.
  */
 export async function parkDisabledProviders(ctx: HostCtx) {
-  const st = ctx.get('settings')
-  if (st === undefined) return { parked: 0 }
-  if (!checkWritable(st)) return { parked: 0 }
-
-  const providers = readProviders(st)
-  const marked = Object.keys(providers).filter((r) => (providers as any)[r] && (providers as any)[r].disabled === true)
-  if (marked.length === 0) return { parked: 0 }
-
-  const disabled = readDisabled(st)
-  const nextProviders: Record<string, unknown> = {}
-  const nextDisabled: Record<string, unknown> = {}
-  for (const k of Object.keys(providers)) nextProviders[k] = (providers as any)[k]
-  for (const k of Object.keys(disabled)) nextDisabled[k] = (disabled as any)[k]
-
-  let parked = 0
-  for (const r of marked) {
-    nextDisabled[r] = nextProviders[r]
-    delete nextProviders[r]
-    parked += 1
-  }
-
-  try {
-    await writeSection(st, nextProviders as any, nextDisabled as any)
-  } catch {
-    return { parked: 0 }
-  }
-  return { parked }
+  const result = await migrateDisabledLayout(ctx)
+  return { parked: result.parked + result.restored }
 }

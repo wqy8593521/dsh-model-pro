@@ -10,12 +10,26 @@
 
 import { NS, ROUTES_KEY, PLACEHOLDER_MODEL_ID } from '../shared/constants'
 import type { ModelEntry, ProviderProfile, RoutesMap } from '../shared/types'
+import {
+  readProviderDict,
+  readDisabledDict,
+  readSection,
+  writeSections,
+} from './settings'
+export { readSection } from './settings'
+import type { SettingsLike } from './settings'
+import { readOwnSection } from './config'
+import { writeOwnedSection } from './compat'
 
-/** Settings service interface (subset we use) */
-export interface SettingsService {
-  get(ns: string): Record<string, unknown> | undefined
+/** Settings service interface (subset we use).
+ *
+ * The `get` member is OPTIONAL because DSH 0.2's settings service
+ * (`SettingsForms`) has no such accessor — see `src/host/settings.ts`. Every
+ * accessor below goes through that module rather than touching `get` directly. */
+export interface SettingsService extends SettingsLike {
+  get?(ns: string): Record<string, unknown> | undefined
   readonly writable: boolean
-  replace(ns: string, section: unknown): Promise<void>
+  replace(ns: string, section: unknown, expectedRevision?: number): Promise<void>
 }
 
 /** LLM service interface (subset we use) */
@@ -66,24 +80,16 @@ export function makeHostPlain(obj: Record<string, unknown>): Record<string, null
 
 /** Read the `providers` dict from the llm-pi-ai settings section. */
 export function readProviders(st: SettingsService | undefined): Record<string, ProviderProfile> {
-  if (st === undefined) return {}
-  try {
-    const section = st.get(NS)
-    if (section && typeof section === 'object' && (section as any).providers && typeof (section as any).providers === 'object')
-      return (section as any).providers as Record<string, ProviderProfile>
-  } catch { /* ignore */ }
-  return {}
+  return readProviderDict(st)
 }
 
-/** Read the `disabledProviders` dict from the llm-pi-ai settings section. */
+/** Read the `disabledProviders` dict — OUR owned state, not an llm-pi-ai key.
+ *
+ * 0.1 kept it at `llm-pi-ai.disabledProviders` as a foreign key; 0.2's schema
+ * guard refuses that write, so it now lives in this plugin's own section.
+ * `migrateDisabledLayout` normalises the old layout at startup. */
 export function readDisabled(st: SettingsService | undefined): Record<string, ProviderProfile> {
-  if (st === undefined) return {}
-  try {
-    const section = st.get(NS)
-    if (section && typeof section === 'object' && (section as any).disabledProviders && typeof (section as any).disabledProviders === 'object')
-      return (section as any).disabledProviders as Record<string, ProviderProfile>
-  } catch { /* ignore */ }
-  return {}
+  return readDisabledDict(st)
 }
 
 /** Read a single provider profile from a dict by route. */
@@ -110,62 +116,51 @@ export function readRealModels(profile: ProviderProfile | null): ModelEntry[] {
     .map((model) => (model && typeof model === 'object' ? { ...model } : { id: String(model) }))
 }
 
-/** Read the smart-routing alias table from the llm-pi-ai section.
+/** Read the smart-routing alias table from THIS PLUGIN'S OWN section.
  * Returns a SHALLOW COPY: the resolved settings object is deep-frozen (so
  * `delete`/assigment on it throws in strict mode — "Cannot delete property"),
  * and callers may restructure the map in place before writing it back. */
 export function readRoutes(st: SettingsService | undefined): RoutesMap {
   if (st === undefined) return {}
-  try {
-    const section = st.get(NS) as Record<string, unknown> | undefined
-    const r = section && section[ROUTES_KEY]
-    if (r && typeof r === 'object') return { ...(r as RoutesMap) }
-  } catch { /* ignore */ }
+  const r = readOwnSection()[ROUTES_KEY]
+  if (r && typeof r === 'object') return { ...(r as RoutesMap) }
   return {}
 }
 
-/** Write the smart-routing alias table, preserving every other section key. */
+/** Write the smart-routing alias table into OUR OWN section.
+ *
+ * Not `llm-pi-ai`: that schema declares only `providers`, and 0.2's write guard
+ * refuses any other destination key. Our section is writable on both arms. */
 export async function writeRoutes(st: SettingsService, routes: RoutesMap): Promise<void> {
-  const preserved: Record<string, unknown> = {}
-  try {
-    const section = st.get(NS) as Record<string, unknown> | undefined
-    if (section && typeof section === 'object') {
-      for (const k of Object.keys(section)) {
-        if (k === ROUTES_KEY) continue
-        preserved[k] = section[k]
-      }
-    }
-  } catch { /* nothing to preserve */ }
-  await st.replace(NS, makeHostPlain({ ...preserved, routes }) as any)
+  await writeOwnedState(st, { [ROUTES_KEY]: routes })
 }
 
-/** Read an arbitrary top-level key from the llm-pi-ai section (foreign-key
- * accessor — e.g. composites / routeStats), returning a plain copy. */
+/** Read an arbitrary owned top-level key (composites / routeStats / …).
+ *
+ * 0.2 cannot see undeclared `llm-pi-ai` keys at all (its section is
+ * schema-normalized), so owned state lives in our section on both arms. */
 export function readRoutesRootKey(st: SettingsService | undefined, key: string): unknown {
   if (st === undefined) return undefined
-  try {
-    const section = st.get(NS) as Record<string, unknown> | undefined
-    const v = section && section[key]
-    if (v && typeof v === 'object') return { ...(v as Record<string, unknown>) }
-    return v
-  } catch { /* ignore */ }
-  return undefined
+  const v = readOwnSection()[key]
+  if (v && typeof v === 'object') return { ...(v as Record<string, unknown>) }
+  return v
 }
 
-/** Write a top-level key in the llm-pi-ai section, preserving every other key. */
+/** Write one owned top-level key, preserving our other owned keys. */
 export async function writeRoutesRootKey(st: SettingsService | undefined, key: string, value: unknown): Promise<void> {
   if (st === undefined) return
-  const preserved: Record<string, unknown> = {}
-  try {
-    const section = st.get(NS) as Record<string, unknown> | undefined
-    if (section && typeof section === 'object') {
-      for (const k of Object.keys(section)) {
-        if (k === key) continue
-        preserved[k] = section[k]
-      }
-    }
-  } catch { /* nothing to preserve */ }
-  await st.replace(NS, makeHostPlain({ ...preserved, [key]: value }) as any)
+  await writeOwnedState(st, { [key]: value })
+}
+
+/** Merge keys into this plugin's own section, preserving what is already there.
+ *
+ * Routed through `compat.writeOwnedSection` so the settings service is reached
+ * in exactly one module (see RULE 2 in src/host/compat.ts, enforced by
+ * tests/host.architecture.mjs). */
+export async function writeOwnedState(st: SettingsService, patch: Record<string, unknown>): Promise<void> {
+  const bag: Record<string, unknown> = { ...readOwnSection() }
+  for (const [k, v] of Object.entries(patch)) bag[k] = v
+  await writeOwnedSection(st, makeHostPlain(bag) as Record<string, unknown>)
 }
 
 /** Owned plugin-state keys (capability provenance, …) read from the llm-pi-ai
@@ -213,30 +208,26 @@ export function checkWritable(st: SettingsService | undefined): boolean {
 }
 
 /**
- * Write both provider dicts to the `llm-pi-ai` settings section, PRESERVING
- * every other top-level key (schema-foreign keys that only this plugin or the
- * operator keep at section level) — `settings.replace()` replaces the whole
- * section, so a wholesale rewrite would silently drop them.
+ * Write the provider dicts to their two homes.
  *
- * This is the only write path — every handler that modifies state calls this.
+ * `providers` goes to `llm-pi-ai` (the only key that namespace's schema
+ * declares, so 0.2's write guard accepts it); the parked `disabled` dict goes to
+ * OUR OWN section, because parking it in `llm-pi-ai` is exactly what 0.2
+ * refuses with `Config field "disabledProviders" is not volatile`.
+ *
+ * The `llm-pi-ai` write deliberately carries ONLY `providers`: preserving other
+ * keys there would carry foreign keys into a schema-checked write and, on 0.2,
+ * they are not even readable back.
+ *
+ * This is the only provider write path — every handler that modifies state
+ * calls this.
  */
 export async function writeSection(
   st: SettingsService,
   providers: Record<string, ProviderProfile>,
   disabled: Record<string, ProviderProfile>,
 ): Promise<void> {
-  const preserved: Record<string, unknown> = {}
-  try {
-    const section = st.get(NS) as Record<string, unknown> | undefined
-    if (section && typeof section === 'object') {
-      for (const k of Object.keys(section)) {
-        if (k === 'providers' || k === 'disabledProviders') continue
-        preserved[k] = section[k]
-      }
-    }
-  } catch { /* nothing to preserve */ }
-
-  await st.replace(NS, makeHostPlain({ ...preserved, providers, disabledProviders: disabled }) as any)
+  await writeSections(st, providers, disabled)
 }
 
 /**

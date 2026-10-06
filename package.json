@@ -13,7 +13,7 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "node tests/host.smoke.mjs && node tests/client.smoke.mjs && node tests/picatalog.mjs && node tests/i18n.mjs",
+    "test": "npm run build && node tests/host.smoke.mjs && node tests/client.smoke.mjs && node tests/picatalog.mjs && node tests/i18n.mjs && node scripts/run-node-test.mjs tests/host.architecture.mjs && node scripts/run-node-test.mjs tests/host.compat-layer.mjs && node scripts/run-node-test.mjs tests/host.schema.mjs && node scripts/run-node-test.mjs tests/host.ownedkeys.mjs && node scripts/run-node-test.mjs tests/host.compat.mjs && node scripts/run-node-test.mjs tests/host.volatile02.mjs && node scripts/run-node-test.mjs tests/host.matrix.mjs",
     "run:host": "node scripts/run-host.mjs",
     "install:local": "node scripts/install-local.mjs",
     "prepare": "test -f src/host/index.ts && npm run build || true",
@@ -72,5 +72,13 @@
   },
   "dependencies": {
     "@noble/ciphers": "^2.3.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/schemastery": "*"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/schemastery": {
+      "optional": true
+    }
   }
 }
