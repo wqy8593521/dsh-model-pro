@@ -592,7 +592,7 @@ export function ModelsPanel({
         ) : curVisible.length === 0 ? (
           <div className="mpro-emptyState">{fmt(t('searchNoMatch'), { q: curQ.trim() })}</div>
         ) : (
-          <div className="mpro-tblWrap">
+          <div className="mpro-tblWrap mpro-currentTblWrap">
             <table className="mpro-tbl">
               <thead>
                 <tr>

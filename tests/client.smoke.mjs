@@ -55,6 +55,13 @@ class FakeReact {
     return [inst.hooks[i], update]
   }
 
+  useRef(init) {
+    const inst = this.current
+    const i = inst.hookIdx++
+    if (i >= inst.hooks.length) inst.hooks.push({ current: init })
+    return inst.hooks[i]
+  }
+
   useEffect(fn) {
     const inst = this.current
     if (!inst.effectsRun) inst.effects.push(fn)
@@ -86,7 +93,7 @@ function renderAt(rootVNode, fake, path, out) {
     // props so assertions can inspect non-click behaviour (drag handlers, input
     // type/min/max) without a second render pass. Form events are captured too,
     // so capability changes can drive and inspect the RPC payloads.
-    out.push({ tag: type, className: props?.className || '', text: collectText(children), onClick: props?.onClick, onChange: props?.onChange, props: props || {} })
+    out.push({ tag: type, className: props?.className || '', text: collectText(children), onClick: props?.onClick, onChange: props?.onChange, ref: props?.ref, props: props || {} })
     for (let i = 0; i < children.length; i++) renderAt(children[i], fake, `${path}:${i}`, out)
     return
   }
@@ -334,6 +341,17 @@ const plugin = moduleExports.apply ? moduleExports : moduleExports.default
 const badgeMod = moduleExports
 plugin.apply(ctx)
 
+// 详情页应清除最近的纵向滚动容器，不改变更外层的窗口滚动。
+const outerScroll = { scrollTop: 80, parentElement: null }
+const settingsScroll = { scrollTop: 240, parentElement: outerScroll }
+const settingsInner = { parentElement: settingsScroll }
+const editorRoot = { parentElement: settingsInner }
+sandbox.getComputedStyle = (node) => ({ overflowY: node === outerScroll || node === settingsScroll ? 'auto' : 'visible' })
+assert(typeof moduleExports.resetEditorScroll === 'function', 'editor scroll helper is exported')
+assert(moduleExports.findScrollableAncestor(editorRoot) === settingsScroll, 'plugin root finds the host settings scroller')
+moduleExports.resetEditorScroll(editorRoot)
+assert(settingsScroll.scrollTop === 0 && outerScroll.scrollTop === 80, 'editor resets the nearest scrollable ancestor only')
+
 const settingsSlot = slotsByName.get('settings.section')
 const badgeSlot = slotsByName.get('conversation.chat.turnTail')
 assert(settingsSlot && typeof settingsSlot.render === 'function', 'settings.section slot rendered')
@@ -360,7 +378,7 @@ const all = out.map((n) => n.className)
 
 // -- structure assertions on the REBUILT bundle --
 const css = structures.join('\n')
-for (const rule of ['.mpro-root', '.mpro-segs', '.mpro-pc', '.mpro-pcActive', '.mpro-pcOff', '.mpro-pill', '.mpro-pillActive', '.mpro-pillOff', '.mpro-verdictOk', '.mpro-discoverBar', '.mpro-step', '.mpro-setupCard', '.mpro-routesTab', '.mpro-statCard', '.mpro-hdotUp', '.mpro-routeRow', '.mpro-targetRow', '.mpro-dragHandle', '.mpro-targetRowOver', '.mpro-moveBtn', '.mpro-retryBox', '.mpro-retrySlider', '.mpro-reasonBox', '.mpro-reasonCell', '.mpro-tierExact', '.mpro-checkRow']) {
+for (const rule of ['.mpro-root', '.mpro-segs', '.mpro-pc', '.mpro-pcActive', '.mpro-pcOff', '.mpro-pill', '.mpro-pillActive', '.mpro-pillOff', '.mpro-verdictOk', '.mpro-discoverBar', '.mpro-step', '.mpro-setupCard', '.mpro-routesTab', '.mpro-statCard', '.mpro-hdotUp', '.mpro-routeRow', '.mpro-targetRow', '.mpro-dragHandle', '.mpro-targetRowOver', '.mpro-moveBtn', '.mpro-retryBox', '.mpro-retrySlider', '.mpro-reasonBox', '.mpro-reasonCell', '.mpro-tierExact', '.mpro-checkRow', '.mpro-editorChrome{position:sticky', '.mpro-currentTblWrap{max-height:none']) {
   assert(css.includes(rule), `styles include ${rule}`)
 }
 
@@ -497,19 +515,33 @@ renderAt(tree, fake, 'root', outD)
 // open the editor for the first provider card
 const editBtn = outD.find((n) => n.tag === 'button' && /^edit$/i.test((n.text || '').trim()))
 assert(editBtn && typeof editBtn.onClick === 'function', 'provider card Edit button present')
+const dashboardNode = outD.find((n) => n.className === 'mpro-root' && typeof n.ref === 'function')
+assert(dashboardNode, 'provider list attaches its scroll restore callback')
+dashboardNode.ref(editorRoot)
+settingsScroll.scrollTop = 260
 editBtn.onClick()
 const outE = []
 renderAt(tree, fake, 'root', outE)
 await new Promise((r) => setTimeout(r, 10))
 renderAt(tree, fake, 'root', outE)
+assert(outE.some((n) => String(n.className).includes('mpro-editorCard')), 'provider editor has a framed card')
+assert(outE.some((n) => String(n.className).includes('mpro-editorChrome')), 'provider header and tabs share the framed chrome')
+const editorRootNode = outE.find((n) => String(n.className).includes('mpro-editorRoot'))
+assert(typeof editorRootNode?.ref === 'function', 'editor root attaches its scroll reset callback')
+settingsScroll.scrollTop = 220
+editorRootNode.ref(editorRoot)
+assert(settingsScroll.scrollTop === 0, 'entering the editor resets the settings scroll')
 // switch to the Models tab
 const modelsTab = outE.find((n) => n.tag === 'button' && /tabModels/i.test(n.text || ''))
 assert(modelsTab && typeof modelsTab.onClick === 'function', 'models tab clickable')
+settingsScroll.scrollTop = 190
 modelsTab.onClick()
+assert(settingsScroll.scrollTop === 0, 'switching editor tabs resets the settings scroll')
 const outM = []
 renderAt(tree, fake, 'root', outM)
 await new Promise((r) => setTimeout(r, 10))
 renderAt(tree, fake, 'root', outM)
+assert(outM.some((n) => String(n.className).includes('mpro-currentTblWrap')), 'current model list uses the expanding table wrapper')
 const searchInputs = outM.filter((n) => n.tag === 'input' && String(n.className).includes('mpro-searchInput'))
 assert(searchInputs.length >= 1, `models tab renders search input(s), got ${searchInputs.length}`)
 assert(outM.some((n) => n.tag === 'button' && /^selectAll$/i.test((n.text || '').trim())), 'current list renders select-all')
@@ -724,6 +756,16 @@ assert(outA.some((n) => String(n.className).includes('mpro-reasonCell')), 'the m
   const saveBtn = outLv.find((n) => n.tag === 'button' && /^save$/i.test((n.text || '').trim()))
   assert(saveBtn && saveBtn.props.disabled === true, 'save is blocked while no level is selected')
 }
+
+const backBtn = outA.find((n) => n.tag === 'button' && /^←\s*back$/i.test((n.text || '').trim()))
+assert(backBtn && typeof backBtn.onClick === 'function', 'provider editor has a back button')
+backBtn.onClick()
+const outBack = []
+renderAt(tree, fake, 'root', outBack)
+const restoredDashboard = outBack.find((n) => n.className === 'mpro-root' && typeof n.ref === 'function')
+assert(restoredDashboard, 'provider list remounts after returning from editor')
+restoredDashboard.ref(editorRoot)
+assert(settingsScroll.scrollTop === 260, 'returning from editor restores the provider-list scroll position')
 
 // -- conversation badge (turnTail): select + render pipeline --
 {

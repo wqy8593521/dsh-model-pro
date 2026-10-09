@@ -11,6 +11,23 @@ import { TestPanel } from './TestPanel'
 
 export type EditorTab = 'overview' | 'headers' | 'models' | 'test'
 
+/** 从插件根节点向上查找宿主设置页的滚动容器，跳过插件内的表格。 */
+export function findScrollableAncestor(node: HTMLElement | null): HTMLElement | null {
+  for (let parent = node?.parentElement; parent; parent = parent.parentElement) {
+    const overflow = getComputedStyle(parent).overflowY
+    if (overflow === 'auto' || overflow === 'scroll' || overflow === 'overlay') {
+      return parent
+    }
+  }
+  return null
+}
+
+/** 进入详情或切换标签时，清除宿主设置页继承的滚动位置。 */
+export function resetEditorScroll(node: HTMLElement | null): void {
+  const scroller = findScrollableAncestor(node)
+  if (scroller) scroller.scrollTop = 0
+}
+
 interface Props {
   t: TFunc
   call: CallFn
@@ -21,6 +38,7 @@ interface Props {
 
 export function ProviderEditor({ t, call, data, initialTab, onBack }: Props) {
   const [tab, setTab] = React.useState<EditorTab>(initialTab || 'overview')
+  const rootRef = React.useRef<HTMLDivElement | null>(null)
   const [disabled, setDisabled] = React.useState(!!data.disabled)
   const [info, setInfo] = React.useState<InfoState>({
     displayName: data.displayName,
@@ -37,6 +55,14 @@ export function ProviderEditor({ t, call, data, initialTab, onBack }: Props) {
   const [apiKeyProbe, setApiKeyProbe] = React.useState('')
   const [busy, setBusy] = React.useState(false)
   const [status, setStatus] = React.useState<StatusMsg | null>(null)
+  const attachRoot = React.useCallback((node: HTMLDivElement | null) => {
+    rootRef.current = node
+    if (node) resetEditorScroll(node)
+  }, [])
+  const selectTab = (id: EditorTab) => {
+    setTab(id)
+    resetEditorScroll(rootRef.current)
+  }
 
   const set = (p: Partial<InfoState>) => setInfo((f) => ({ ...f, ...p }))
   // 编辑页替代父级仪表盘，错误必须写入当前可见页的状态。
@@ -88,7 +114,7 @@ export function ProviderEditor({ t, call, data, initialTab, onBack }: Props) {
     : null
 
   const tabBtn = (id: EditorTab, label: string, count?: number) => (
-    <button className={tab === id ? 'mpro-tab mpro-tabActive' : 'mpro-tab'} onClick={() => setTab(id)}>
+    <button className={tab === id ? 'mpro-tab mpro-tabActive' : 'mpro-tab'} onClick={() => selectTab(id)}>
       {label}
       {count != null && count > 0 ? <span className="mpro-tabCount">({count})</span> : null}
     </button>
@@ -107,7 +133,7 @@ export function ProviderEditor({ t, call, data, initialTab, onBack }: Props) {
         saveField={saveField}
         modelCount={(models || []).length}
         headerCount={(headers || []).length}
-        onGoTest={() => setTab('test')}
+        onGoTest={() => selectTab('test')}
         inlineStatus={inlineStatus}
       />
     ) : tab === 'headers' ? (
@@ -147,38 +173,40 @@ export function ProviderEditor({ t, call, data, initialTab, onBack }: Props) {
     )
 
   return (
-    <div className="mpro-root">
-      <div className="mpro-card">
-        <div className="mpro-editorHead">
-          <button className="mpro-btn mpro-btnSm" onClick={onBack}>← {t('back')}</button>
-          <h2 className="mpro-editorTitle">{data.displayName || data.route}</h2>
-          <span className="mpro-editorRoute">{data.route}</span>
-          {disabled ? (
-            <span className="mpro-pill mpro-pillOff">{t('stateDisabled')}</span>
-          ) : (
-            <span className="mpro-pill mpro-pillActive">{t('stateActive')}</span>
-          )}
-          <div className="mpro-editorActions">
-            {!disabled && (
-              <button className="mpro-btn mpro-btnSm" disabled={busy} onClick={() => void toggle(false)}>
-                {t('disable')}
-              </button>
+    <div className="mpro-root mpro-editorRoot" ref={attachRoot}>
+      <div className="mpro-card mpro-editorCard">
+        <div className="mpro-editorChrome">
+          <div className="mpro-editorHead">
+            <button className="mpro-btn mpro-btnSm" onClick={onBack}>← {t('back')}</button>
+            <h2 className="mpro-editorTitle">{data.displayName || data.route}</h2>
+            <span className="mpro-editorRoute">{data.route}</span>
+            {disabled ? (
+              <span className="mpro-pill mpro-pillOff">{t('stateDisabled')}</span>
+            ) : (
+              <span className="mpro-pill mpro-pillActive">{t('stateActive')}</span>
             )}
-            {disabled && (
-              <button className="mpro-btn mpro-btnSm" disabled={busy} onClick={() => void toggle(true)}>
-                {t('enable')}
+            <div className="mpro-editorActions">
+              {!disabled && (
+                <button className="mpro-btn mpro-btnSm" disabled={busy} onClick={() => void toggle(false)}>
+                  {t('disable')}
+                </button>
+              )}
+              {disabled && (
+                <button className="mpro-btn mpro-btnSm" disabled={busy} onClick={() => void toggle(true)}>
+                  {t('enable')}
+                </button>
+              )}
+              <button className="mpro-btn mpro-btnSm mpro-btnDanger" disabled={busy} onClick={() => void remove()}>
+                {t('delete')}
               </button>
-            )}
-            <button className="mpro-btn mpro-btnSm mpro-btnDanger" disabled={busy} onClick={() => void remove()}>
-              {t('delete')}
-            </button>
+            </div>
           </div>
-        </div>
-        <div className="mpro-tabs">
-          {tabBtn('overview', t('tabOverview'))}
-          {tabBtn('headers', t('tabHeaders'), (headers || []).length)}
-          {tabBtn('models', t('tabModels'), (models || []).length)}
-          {tabBtn('test', t('tabTest'))}
+          <div className="mpro-tabs">
+            {tabBtn('overview', t('tabOverview'))}
+            {tabBtn('headers', t('tabHeaders'), (headers || []).length)}
+            {tabBtn('models', t('tabModels'), (models || []).length)}
+            {tabBtn('test', t('tabTest'))}
+          </div>
         </div>
         {activePanel}
         {tab === 'test' && inlineStatus}

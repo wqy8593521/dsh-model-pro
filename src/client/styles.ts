@@ -114,9 +114,13 @@ export const CSS = [
   '.mpro-stepLabel{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--dsw-alias-label-tertiary)}',
 
   // ---------- editor ----------
+  '.mpro-editorRoot{box-sizing:border-box;width:100%;max-width:1200px;min-width:0}',
+  // clip 保留圆角裁切且不形成滚动容器，顶部才能吸附在设置页滚动区域。
+  '.mpro-editorCard{min-width:0;overflow:clip}',
+  '.mpro-editorChrome{position:sticky;top:0;z-index:3;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1);border-bottom:0;border-radius:var(--mpro-radius) var(--mpro-radius) 0 0;margin:-1px -1px 0}',
   '.mpro-editorHead{display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid var(--dsw-alias-border-l1);flex-wrap:wrap}',
   '.mpro-editorTitle{font-size:16px;font-weight:650;margin:0;letter-spacing:-0.01em;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
-  '.mpro-editorRoute{font-family:var(--mpro-monospace);font-size:12px;color:var(--dsw-alias-label-tertiary)}',
+  '.mpro-editorRoute{font-family:var(--mpro-monospace);font-size:12px;color:var(--dsw-alias-label-tertiary);min-width:0;overflow-wrap:anywhere}',
   '.mpro-editorActions{margin-left:auto;display:flex;gap:6px;align-items:center;flex-wrap:wrap}',
   '.mpro-tabs{display:flex;gap:2px;border-bottom:1px solid var(--dsw-alias-border-l1);padding:0 8px;overflow-x:auto}',
   '.mpro-tab{padding:10px 14px;font-size:12.5px;font-weight:500;color:var(--dsw-alias-label-secondary);cursor:pointer;border:none;background:none;border-bottom:2px solid transparent;transition:color .12s,border-color .12s;font-family:inherit;white-space:nowrap}',
@@ -155,6 +159,8 @@ export const CSS = [
   '.mpro-capabilitySelect{min-width:145px;width:auto}',
   '.mpro-capabilityUnknown{color:var(--dsw-alias-label-tertiary)}',
   '.mpro-tblWrap{overflow:auto;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;max-height:320px}',
+  // 当前模型沿用设置页纵向滚动，窗口变大时不再受 320px 限制；远端模型仍保持紧凑表格。
+  '.mpro-currentTblWrap{max-height:none}',
   '.mpro-tbl{width:100%;border-collapse:collapse;font-size:12px}',
   '.mpro-tbl th{position:sticky;top:0;text-align:left;padding:7px 10px;font-weight:600;color:var(--dsw-alias-label-secondary);border-bottom:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-3);white-space:nowrap;z-index:1}',
   '.mpro-tbl td{padding:6px 10px;border-bottom:1px solid var(--dsw-alias-border-l1);font-variant-numeric:tabular-nums}',
