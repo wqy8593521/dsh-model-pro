@@ -1,8 +1,12 @@
 /**
  * dsh-model-pro — Host half utilities.
  *
- * makeHostPlain: rebuilds objects with Object.create(null) so they pass
- * the dsh-settings isPlainObject check across the vm sandbox realm boundary.
+ * A thin façade over the settings data layer (`settings.ts` / `config.ts` /
+ * `compat.ts`): typed readers and per-key writers for handlers. The settings
+ * SERVICE itself is only ever touched in `compat.ts` (RULE 2); the
+ * cross-realm interop helper and the owned-section merge write live there and
+ * in `settings.ts` respectively, re-exported here for the handlers' import
+ * path stability.
  *
  * readProviders / readDisabled / readProfile: helpers to read from the
  * llm-pi-ai settings section safely.
@@ -14,12 +18,13 @@ import {
   readProviderDict,
   readDisabledDict,
   readSection,
+  writeOwnedState,
   writeSections,
 } from './settings'
-export { readSection } from './settings'
+export { readSection, writeOwnedState } from './settings'
+export { makeHostPlain } from './compat'
 import type { SettingsLike } from './settings'
 import { readOwnSection } from './config'
-import { writeOwnedSection } from './compat'
 
 /** Settings service interface (subset we use).
  *
@@ -57,26 +62,10 @@ export interface HostCtx {
  * The dsh-settings isPlainObject check (proto === Object.prototype || proto === null)
  * rejects sandbox-realm object literals because vm contexts have their own
  * Object.prototype. Object.create(null) produces a null-proto object that passes.
+ *
+ * Implemented in `compat.ts` (it exists for the settings write path); re-exported
+ * above so handlers keep importing it from this module.
  */
-export function makeHostPlain(obj: Record<string, unknown>): Record<string, null> {
-  const out = Object.create(null) as Record<string, null>
-  for (const k in obj) {
-    if (!Object.prototype.hasOwnProperty.call(obj, k)) continue
-    const v = obj[k]
-    if (v !== null && typeof v === 'object' && !Array.isArray(v)) {
-      out[k] = makeHostPlain(v as Record<string, unknown>) as any
-    } else if (Array.isArray(v)) {
-      out[k] = v.map((item) => {
-        if (item !== null && typeof item === 'object' && !Array.isArray(item))
-          return makeHostPlain(item as Record<string, unknown>)
-        return item
-      }) as any
-    } else {
-      out[k] = v as any
-    }
-  }
-  return out
-}
 
 /** Read the `providers` dict from the llm-pi-ai settings section. */
 export function readProviders(st: SettingsService | undefined): Record<string, ProviderProfile> {
@@ -152,16 +141,13 @@ export async function writeRoutesRootKey(st: SettingsService | undefined, key: s
   await writeOwnedState(st, { [key]: value })
 }
 
-/** Merge keys into this plugin's own section, preserving what is already there.
+/**
+ * Merge keys into this plugin's own section, preserving what is already there.
  *
- * Routed through `compat.writeOwnedSection` so the settings service is reached
- * in exactly one module (see RULE 2 in src/host/compat.ts, enforced by
- * tests/host.architecture.mjs). */
-export async function writeOwnedState(st: SettingsService, patch: Record<string, unknown>): Promise<void> {
-  const bag: Record<string, unknown> = { ...readOwnSection() }
-  for (const [k, v] of Object.entries(patch)) bag[k] = v
-  await writeOwnedSection(st, makeHostPlain(bag) as Record<string, unknown>)
-}
+ * Implemented in `settings.ts` (next to the owned-section reader/writer it
+ * composes) and re-exported above; see the full rationale there for why a
+ * non-exhaustive owned write MUST read-merge-write on 0.2.
+ */
 
 /** Owned plugin-state keys (capability provenance, …) read from the llm-pi-ai
  * section root on the current Harness settings API.

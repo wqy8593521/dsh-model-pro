@@ -9,12 +9,13 @@
  */
 
 import { NS } from '../shared/constants'
-import { CONFIG_NS, OWNED_STATE_KEYS, disabledProvidersFrom } from './config'
+import { CONFIG_NS, OWNED_STATE_KEYS, disabledProvidersFrom, readOwnSection } from './config'
 import type { ProviderProfile } from '../shared/types'
 import type { HostCtx } from './utils'
 import {
   asRecord,
   isDescriptorSettings,
+  makeHostPlain,
   readProviderDict,
   readSection,
   partitionOwnedKeys,
@@ -117,6 +118,35 @@ export function readDisabledDict(st: SettingsLike | undefined): Record<string, P
 }
 
 /**
+ * Merge keys into this plugin's own section, preserving every key already there.
+ *
+ * This is the ONLY safe way to write a non-exhaustive patch into our own
+ * section on 0.2. `SettingsForms.replace()` is documented as "Reset all live
+ * fields, then set the supplied fields", and its write does exactly that:
+ * `mergeLayers(strip(raw, form), next)` deletes every declared volatile field
+ * from the stored patch and re-materialises only the fields the caller supplied
+ * — so a partial `replace()` silently resets every owned key it does not
+ * mention. Reading the section first and passing the merged result makes the
+ * write exhaustive again (RULE 3, in the write direction).
+ *
+ * `readOwnSection()` reads the same served value every reader resolves owned
+ * state from, so the keys restated here are exactly the keys the next read will
+ * look for. Values are wrapped by {@link makeHostPlain} because the services
+ * validate patches with a realm-sensitive isPlainObject check.
+ *
+ * Lives beside the owned-section reader/writer rather than in `utils` so the
+ * data layer keeps one direction of dependency (compat ← settings ← utils).
+ */
+export async function writeOwnedState(
+  st: SettingsLike,
+  patch: Record<string, unknown>,
+): Promise<void> {
+  const bag: Record<string, unknown> = { ...readOwnSection() }
+  for (const [k, v] of Object.entries(patch)) bag[k] = v
+  await writeOwnedSection(st, makeHostPlain(bag) as Record<string, unknown>)
+}
+
+/**
  * Write the enabled providers to `llm-pi-ai` and the parked ones to our own
  * section.
  *
@@ -125,6 +155,11 @@ export function readDisabledDict(st: SettingsLike | undefined): Record<string, P
  * guard has nothing to reject. Foreign keys are never carried across from the
  * read side either: on 0.2 they would be invisible, and blindly re-writing them
  * on 0.1 would resurrect stale state.
+ *
+ * The owned half goes through {@link writeOwnedState}: a bare
+ * `{disabledProviders}` section would make 0.2's `replace()` reset every OTHER
+ * owned field — routes, composites, uiPrefs, capabilities — on each provider
+ * add/edit/toggle/delete (issue #6).
  */
 export async function writeSections(
   st: SettingsLike,
@@ -137,9 +172,7 @@ export async function writeSections(
   // section only. Callers pass the unioned dict, so nothing is lost in the move.
   await writeLLMProviders(st, providers)
 
-  const owned: Record<string, unknown> = Object.create(null)
-  owned[DISABLED_KEY] = disabled
-  await writeOwnedSection(st, owned as Record<string, unknown>)
+  await writeOwnedState(st, { [DISABLED_KEY]: disabled })
 }
 
 /**

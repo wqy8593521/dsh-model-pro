@@ -39,6 +39,31 @@ async function createProviderLocked(
   if (Object.prototype.hasOwnProperty.call(disabled, id))
     return { ok: false as const, error: `提供商 "${id}" 已存在(已禁用)` }
 
+  // A route named after an INSTALLED provider (dsh-llm-*, e.g. `deepseek-official`)
+  // would silently shadow it: pi-ai resolves the route to the installed provider
+  // and overlays this profile's fields on top of the built-in endpoints/protocol,
+  // while the native model page keeps showing the built-in as if nothing changed
+  // (issue #6, finding C). Refuse the name — the dedup above only sees OUR dicts.
+  const llm = ctx.get('llm')
+  if (llm) {
+    try {
+      const clash = llm
+        .listConfigurableProviders()
+        .find((p) => p && typeof p.provider === 'string' && p.provider === id)
+      if (clash) {
+        const what = clash.displayName && clash.displayName !== clash.provider ? `(${clash.displayName})` : ''
+        return {
+          ok: false as const,
+          error:
+            `提供商名 "${id}" 与已安装的内置提供商${what}重名,新建会静默接管其路由;` +
+            `请换一个名字,或直接使用该内置提供商`,
+        }
+      }
+    } catch {
+      /* 枚举失败(服务异常/旧宿主)时跳过该校验,保持可创建。 */
+    }
+  }
+
   const profile: Record<string, unknown> = {}
   if (args.displayName && args.displayName.trim()) profile.displayName = args.displayName.trim()
   if (args.api && PROTOS.indexOf(args.api as any) >= 0) profile.api = args.api

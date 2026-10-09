@@ -130,8 +130,12 @@ export function bindConfigAccessor(settings: unknown): void {
 /**
  * Read this plugin's own section through the bound settings service.
  *
- * 0.1 → `get(ns)`; 0.2 → the plugin's own `describe()` row. `value` is the
- * resolved section (defaults applied), which is what we want to preserve.
+ * 0.1 → `get(ns)`; 0.2 → the plugin's own `describe()` row, preferring the
+ * `user` (PATCH) layer over `value` (resolved). The resolved layer materializes
+ * schemastery defaults into every owned key, and restating that on a write
+ * would pin those defaults into the user's document (issue #6, finding B) —
+ * the patch layer is both what we round-trip and what every write restates.
+ * Keys absent from the patch stay absent; readers default them to `{}`.
  */
 export function readOwnSection(): Record<string, unknown> {
   let settings: unknown
@@ -146,7 +150,7 @@ export function readOwnSection(): Record<string, unknown> {
   try {
     if (typeof svc.get === 'function') return asRecord(svc.get(CONFIG_NS)) ?? {}
     const row = svc.describe?.()?.find((r) => r.ns === CONFIG_NS)
-    return asRecord(row?.value) ?? asRecord(row?.user) ?? {}
+    return asRecord(row?.user) ?? asRecord(row?.value) ?? {}
   } catch {
     return {}
   }

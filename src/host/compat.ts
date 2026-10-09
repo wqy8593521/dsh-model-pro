@@ -66,6 +66,13 @@ export interface SettingsLike {
   /** 0.1 only. */
   get?(ns: string): Record<string, unknown> | undefined
   replace(ns: string, section: unknown, expectedRevision?: number): Promise<void>
+  /**
+   * 0.2 only (`SettingsForms`). Merges `patch` into the entry's CURRENT patch
+   * layer server-side, so fields the patch omits keep their stored values.
+   * Presence of this member — not a version string — is what picks the safe
+   * write for a partial patch (see RULE 1, and the probe write below).
+   */
+  update?(ns: string, patch: unknown, expectedRevision?: number): Promise<void>
   readonly writable?: boolean
   /** 0.2 only: the served namespace descriptors. */
   describe?(options?: { redactSecrets?: boolean }): Array<{
@@ -95,18 +102,59 @@ export function isDescriptorSettings(st: SettingsLike | undefined): boolean {
 export const asRecord = (v: unknown): Record<string, unknown> | undefined =>
   v !== null && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined
 
+/**
+ * Recursively rebuild an object with `Object.create(null)` prototypes.
+ *
+ * The settings services validate incoming patches with an `isPlainObject` check
+ * (`proto === Object.prototype || proto === null`), and objects built inside this
+ * plugin's vm realm carry a DIFFERENT `Object.prototype`, so a bare literal fails
+ * it. Null-prototype copies pass on both arms. (Lives here because it exists for
+ * the write path — RULE 2 keeps every service interop concern in this file.)
+ */
+export function makeHostPlain(obj: Record<string, unknown>): Record<string, unknown> {
+  const out = Object.create(null) as Record<string, unknown>
+  for (const k in obj) {
+    if (!Object.prototype.hasOwnProperty.call(obj, k)) continue
+    const v = obj[k]
+    if (v !== null && typeof v === 'object' && !Array.isArray(v)) {
+      out[k] = makeHostPlain(v as Record<string, unknown>)
+    } else if (Array.isArray(v)) {
+      out[k] = v.map((item) => {
+        if (item !== null && typeof item === 'object' && !Array.isArray(item))
+          return makeHostPlain(item as Record<string, unknown>)
+        return item
+      })
+    } else {
+      out[k] = v
+    }
+  }
+  return out
+}
+
 // ---------------------------------------------------------------------------
 // reads
 // ---------------------------------------------------------------------------
 
-/** Pull one namespace's served values out of a `descriptor` answer. */
+/**
+ * Pull one namespace's served values out of a `descriptor` answer.
+ *
+ * The `user` row (the profile's PATCH layer) is preferred over `value` (the
+ * RESOLVED live config). The resolved layer has schemastery defaults and
+ * `${{…}}` interpolations materialized into it — restating THAT layer on a
+ * write pins those defaults into the user's document, where the host can never
+ * adjust them again (issue #6, finding B: one provider write rewrote every
+ * existing profile with eleven fields the user never wrote). The patch layer is
+ * also what every write round-trips, so reading it keeps reads and writes on
+ * the same source of truth. `value` stays as the fallback for a service that
+ * does not serve a `user` row.
+ */
 function fromDescribe(st: SettingsLike, ns: string): Record<string, unknown> {
   try {
     const describe = st.describe
     if (typeof describe !== 'function') return {}
     const row = describe.call(st)?.find((r) => r?.ns === ns)
     if (row === undefined) return {}
-    return asRecord(row.value) ?? asRecord(row.user) ?? {}
+    return asRecord(row.user) ?? asRecord(row.value) ?? {}
   } catch {
     return {}
   }
@@ -323,8 +371,25 @@ async function selfCheckInner(
   // as a failure would cry wolf on fresh installs. What must be provable is that
   // THIS plugin can persist and re-read its own configuration.
   const token = `probe-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+  // A PARTIAL write is destructive on the `descriptor` arm. `replace()` is
+  // documented as "Reset all live fields, then set the supplied fields": its
+  // write strips every declared volatile field from the stored patch and
+  // re-materialises only what the caller supplied — so replacing just the probe
+  // used to delete routes/uiPrefs/disabledProviders/… on every startup
+  // (issue #6). `update()` merges at the patch layer and exists on exactly the
+  // arm with that hazard; the legacy arm gets an explicit read-merge-replace
+  // (RULE 3) so nothing depends on how its replace treats unmentioned keys.
+  const patch: Record<string, unknown> = { [SELF_CHECK_KEY]: token }
   try {
-    await st.replace(runtimeNamespace, { [SELF_CHECK_KEY]: token } as unknown)
+    if (typeof st.update === 'function') {
+      await st.update(runtimeNamespace, patch as unknown)
+    } else {
+      const section = readSection(st, runtimeNamespace)
+      await st.replace(
+        runtimeNamespace,
+        makeHostPlain({ ...section, ...patch }) as unknown,
+      )
+    }
   } catch (error) {
     return {
       code: 'write-failed',

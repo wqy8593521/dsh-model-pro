@@ -63,9 +63,38 @@ const descriptorService = (doc = {}, ns = 'dsh-model-pro') => {
     writable: true,
     describe: () => [
       { ns, schema: cfg, revision: 0, value: project(cfg, doc), user: project(cfg, doc) },
-      { ns: NS, schema: llmSchema, revision: 0, value: project(llmSchema, doc.providers ? { providers: doc.providers } : {}), user: {} },
+      // The real host serves BOTH layers projected to the schema: `value` is the
+      // resolved config, `user` the profile patch. This double keeps one store
+      // for llm-pi-ai, so both rows project it (the projection is what hides
+      // foreign keys — RULE 3).
+      { ns: NS, schema: llmSchema, revision: 0, value: project(llmSchema, doc.providers ? { providers: doc.providers } : {}), user: project(llmSchema, doc.providers ? { providers: doc.providers } : {}) },
     ],
-    replace: async (n, section) => { if (n === ns) Object.assign(doc, structuredClone(section)) },
+    // Faithful `SettingsForms.write`: the stored patch becomes
+    // mergeLayers(strip(raw, form), next) — DECLARED fields are dropped from the
+    // stored section and restated only from the write, so a partial section
+    // RESETS every declared field it omits (the issue #6 data-loss mechanism).
+    // UNDECLARED keys survive.
+    replace: async (n, section) => {
+      if (n !== ns) return
+      const next = structuredClone(section)
+      for (const k of Object.keys(next)) {
+        if (!declaredOwned.includes(k)) throw new Error(`Config field "${k}" is not volatile`)
+      }
+      const stripped = {}
+      for (const [k, v] of Object.entries(doc)) {
+        if (!declaredOwned.includes(k)) stripped[k] = structuredClone(v)
+      }
+      doc = { ...stripped, ...next }
+    },
+    // Faithful `SettingsForms.update`: merge the patch into the CURRENT section.
+    update: async (n, patch) => {
+      if (n !== ns) return
+      const p = structuredClone(patch)
+      for (const k of Object.keys(p)) {
+        if (!declaredOwned.includes(k)) throw new Error(`Config field "${k}" is not volatile`)
+      }
+      doc = { ...doc, ...p }
+    },
     _store: () => doc,
     _declared: declaredOwned,
   }
@@ -184,6 +213,18 @@ await check('RULE 4 — the probe leaves a readable token, not wreckage', async 
   assert.equal(r.code, 'ok', JSON.stringify(r))
   assert.ok(typeof st._store()[SELF_CHECK_KEY] === 'string', 'probe token should be persisted')
   assert.deepEqual(st._store().routes, { keep: 1 }, 'self-check must not clobber other owned state')
+})
+
+await check('RULE 4 — a descriptor arm WITHOUT update() still preserves owned state', async () => {
+  // The fallback for an older/different descriptor service: read what is served,
+  // restate it alongside the probe (RULE 3). A one-field replace here would be
+  // exactly the issue #6 wipe, because this double's replace() is faithful.
+  const st = descriptorService({ routes: { keep: 1 } })
+  delete st.update
+  const r = await selfCheck(st, 'dsh-model-pro')
+  assert.equal(r.code, 'ok', JSON.stringify(r))
+  assert.deepEqual(st._store().routes, { keep: 1 }, 'self-check must not clobber other owned state')
+  assert.ok(typeof st._store()[SELF_CHECK_KEY] === 'string', 'probe token should be persisted')
 })
 
 await check('RULE 4 — a HANGING service cannot block activation (bounded probe)', async () => {
