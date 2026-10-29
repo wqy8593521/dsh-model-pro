@@ -181,3 +181,18 @@ export const LOCAL_GATEWAY_PATH = '/model-pro/v1'
  * whose only model is "placeholder".
  */
 export const PLACEHOLDER_MODEL_ID = 'placeholder'
+
+/**
+ * Owned-state key holding the HIDDEN model bag: models the user temporarily took
+ * out of a provider's model selector, stored as complete entries so "显示" puts
+ * back exactly what was摘掉的 — including hand-authored `reasoningEfforts` /
+ * `compat` / `requestModel`, which llm-pi-ai's discovery flow cannot return.
+ *
+ * Lives in THIS plugin's section for the same reason as `disabledProviders`:
+ * llm-pi-ai's schema declares only `providers`, so 0.2 rejects any other key
+ * there with `Config field "hiddenModels" is not volatile`.
+ *
+ * Shape: `{ [route]: { binding, entries: [{ index, model, capability? }] } }`
+ * — see `src/host/hiddenModels.ts` for why `capability` and `binding` are carried.
+ */
+export const HIDDEN_MODELS_KEY = 'hiddenModels'

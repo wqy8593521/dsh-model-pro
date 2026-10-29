@@ -4,6 +4,7 @@ import { PLACEHOLDER_MODEL_ID, PROTOS } from '../../shared/constants'
 import type { HostCtx } from '../utils'
 import { readProviders, readDisabled, checkWritable, writeSection, makeHostPlain } from '../utils'
 import { readCapabilityState, saveCapabilities, withCapabilityWrite } from '../capabilityStore'
+import { readHiddenState, writeHiddenState, clearHiddenFor } from '../hiddenModels'
 import { setApiKey } from './updateKey'
 
 export async function createProvider(
@@ -87,7 +88,13 @@ async function createProviderLocked(
     const before = readCapabilityState(st)
     const after = { ...before }
     delete after[id]
+    // 同理，隐藏归档也是按 route 键控的：新提供商绝不能继承上一个同名 route 的
+    // 隐藏条目（那些条目会跟着新提供商一起被"显示"回来，凭空多出模型）。
+    const hiddenCleared = clearHiddenFor(readHiddenState(st), id)
     await saveCapabilities(st, before, after, () => writeSection(st, next as any, existingDisabled as any))
+    if (hiddenCleared.removed.length) {
+      try { await writeHiddenState(st, hiddenCleared.state) } catch { /* best effort */ }
+    }
   } catch (err) {
     return { ok: false as const, error: String((err as Error)?.message || err) }
   }

@@ -40,7 +40,7 @@ const volatile = (s) => s.extra('volatile', true)
 const anySchema = zReal.any().default({})
 const dictSchema = zReal.dict(zReal.any()).default({})
 const ownedKeys = [
-  'disabledProviders', 'modelCapabilities', 'routes', 'composites', 'routeStats',
+  'disabledProviders', 'hiddenModels', 'modelCapabilities', 'routes', 'composites', 'routeStats',
   'uiPrefs', 'routerRetry', 'modelCatalog', 'localGateway', 'writeProbe',
 ]
 const configSchema = zReal.object(Object.fromEntries(ownedKeys.map((k) => [k, volatile(zReal.any().default({}))])))

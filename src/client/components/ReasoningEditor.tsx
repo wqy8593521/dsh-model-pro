@@ -269,39 +269,27 @@ export function ReasoningEditor({ t, call, route, model, catalog, onSave, onClos
             )
           )}
 
-          <div className="mpro-tblWrap">
-            <table className="mpro-tbl">
-              <thead>
-                <tr>
-                  <th className="mpro-tblCk"></th>
-                  <th>{t('reasonLevelCol')}</th>
-                  <th>{t('reasonWireCol')}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {THINKING_LEVELS.map((level) => {
-                  const on = Object.prototype.hasOwnProperty.call(wires, level)
-                  return (
-                    <tr key={level}>
-                      <td className="mpro-tblCk">
-                        <input type="checkbox" checked={on} onChange={() => toggleLevel(level)} />
-                      </td>
-                      <td className="mpro-id">{level}</td>
-                      <td>
-                        <input
-                          className="mpro-input mpro-inputMono"
-                          style={{ width: 180 }}
-                          disabled={!on}
-                          value={on ? String(wires[level] ?? '') : ''}
-                          placeholder={level === 'off' ? t('reasonOffPlaceholder') : level}
-                          onChange={(e) => setWire(level, e.target.value)}
-                        />
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
+          {/* 每档一格、自动换行：档位是 7 个（off · minimal · low · medium ·
+              high · xhigh · max），做成固定三列表格时"档名 + 180px 输入框"会
+              把高级区撑到溢出。格子用 flex-basis 自适应，窄了就往下一行折。 */}
+          <div className="mpro-reasonGrid">
+            {THINKING_LEVELS.map((level) => {
+              const on = Object.prototype.hasOwnProperty.call(wires, level)
+              return (
+                <label className="mpro-reasonLevelItem" key={level}>
+                  <input type="checkbox" checked={on} onChange={() => toggleLevel(level)} />
+                  <code className="mpro-reasonLevelName">{level}</code>
+                  <input
+                    className="mpro-input mpro-inputMono mpro-reasonWire"
+                    aria-label={`${t('reasonWireCol')}: ${level}`}
+                    disabled={!on}
+                    value={on ? String(wires[level] ?? '') : ''}
+                    placeholder={level === 'off' ? t('reasonOffPlaceholder') : level}
+                    onChange={(e) => setWire(level, e.target.value)}
+                  />
+                </label>
+              )
+            })}
           </div>
           {offered.length > 0 && <p className="mpro-hint">{fmt(t('reasonSummary'), { levels: offered.join(' · ') })}</p>}
         </>

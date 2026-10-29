@@ -153,6 +153,8 @@ let modelState = [
   { id: 'known-image-model', input: ['text', 'image'], capabilitySource: 'catalog', capabilityConflict: true, capabilityReference: 'Synthetic catalog reference' },
   { id: 'custom-vision-name' },
 ]
+// Models parked in the hidden archive, as get-provider returns them.
+let hiddenState = [{ id: 'archived-model', name: 'Archived model', index: 1, requestModel: 'wire-arch' }]
 const discoveredState = [
   { id: 'remote-text', name: 'Remote text', input: ['text'] },
   { id: 'remote-image', name: 'Remote image', input: ['text', 'image'], capabilitySource: 'discovery' },
@@ -176,7 +178,7 @@ const businessFor = (method, payload) => {
   if (method === 'listRoutes') return { ok: true, routes: { auto: { strategy: 'priority', targets: [{ provider: 'deepseek', model: 'deepseek-chat' }] } } }
   if (method === 'getProvider') return providerRefreshError
     ? { ok: false, error: providerRefreshError }
-    : { ok: true, route: payload?.route || 'deepseek', models: modelState.map((m) => ({ ...m })), availableModels: [] }
+    : { ok: true, route: payload?.route || 'deepseek', models: modelState.map((m) => ({ ...m })), hiddenModels: hiddenState.map((m) => ({ ...m })), availableModels: [] }
   if (method === 'discoverModels') return { ok: true, models: discoveredState.map((m) => ({ ...m })) }
   if (method === 'applyModels') {
     // Identify has its own authoritative result; this client mock does not
@@ -200,6 +202,26 @@ const businessFor = (method, payload) => {
       delete entry.inputMode
       return entry
     })
+    if (payload.mode === 'hide') {
+      const wanted = new Set(incoming.map((m) => m.id))
+      hiddenState = [
+        ...hiddenState,
+        ...modelState
+          .map((m, index) => ({ ...m, index }))
+          .filter((m) => wanted.has(m.id)),
+      ]
+      modelState = modelState.filter((m) => !wanted.has(m.id))
+      // Like the host: `hidden` is the archive size after the call, `parked` is
+      // what THIS call parked (the status line reports the latter).
+      return { ok: true, count: modelState.length, hidden: hiddenState.length, parked: wanted.size }
+    }
+    if (payload.mode === 'show') {
+      const wanted = new Set(incoming.map((m) => m.id))
+      const back = hiddenState.filter((m) => wanted.has(m.id))
+      hiddenState = hiddenState.filter((m) => !wanted.has(m.id))
+      modelState = [...modelState, ...back.map(({ index, ...m }) => m)]
+      return { ok: true, count: modelState.length, restored: back.length }
+    }
     if (payload.mode === 'replace') modelState = incoming
     else if (payload.mode === 'remove') modelState = modelState.filter((m) => !incoming.some((other) => other.id === m.id))
     else {
@@ -271,6 +293,14 @@ const capabilityKeys = new Set([
   'inputCapabilityHint', 'capabilitySourceConfigured', 'capabilitySourceManual', 'capabilitySourceCatalog',
   'capabilitySourceOfficial', 'capabilitySourceProviderDefault', 'capabilitySourceDiscovery', 'capabilitySourceUnknown',
   'capabilityReferenceLabel', 'capabilityConflictHint', 'saveModelConfigFirst',
+  // Hidden-model keys resolve through the real EN dictionary too: the count
+  // templates and the disabled-action hint are part of what is asserted.
+  'hiddenModelsTitle', 'hiddenModelsEmpty', 'hideSelected', 'hideLastModelHint',
+  'hideModelsHint', 'hideModelsConfirm', 'showModel', 'showAllHidden',
+  'statusHidden', 'statusShown', 'stateHidden',
+  // 分页、列头与"几档"摘要同样走真实 EN 词典：计数是断言的一部分。
+  'configCol', 'showMoreRows', 'rowsShown', 'reasonLevelCount',
+  'modelConfigOpen', 'modelConfigClose', 'reasonEditLevels',
 ])
 const fake = new FakeReact()
 const slotsByName = new Map()
@@ -317,6 +347,7 @@ const requireShim = (spec) => {
   throw new Error(`client smoke: unexpected require(${spec})`)
 }
 
+const confirmCalls = []
 const sandbox = {
   console,
   Promise,
@@ -325,6 +356,9 @@ const sandbox = {
   Date,
   document: documentShim,
   window: {},
+  // Confirmations are driven by this test: the dialog itself is the host's, and
+  // the contract asserted here is WHEN it appears (once, see hideHintSeen).
+  confirm: (message) => { confirmCalls.push(String(message)); return true },
 }
 sandbox.globalThis = sandbox
 // The factory registers itself here; capture it.
@@ -378,7 +412,7 @@ const all = out.map((n) => n.className)
 
 // -- structure assertions on the REBUILT bundle --
 const css = structures.join('\n')
-for (const rule of ['.mpro-root', '.mpro-segs', '.mpro-pc', '.mpro-pcActive', '.mpro-pcOff', '.mpro-pill', '.mpro-pillActive', '.mpro-pillOff', '.mpro-verdictOk', '.mpro-discoverBar', '.mpro-step', '.mpro-setupCard', '.mpro-routesTab', '.mpro-statCard', '.mpro-hdotUp', '.mpro-routeRow', '.mpro-targetRow', '.mpro-dragHandle', '.mpro-targetRowOver', '.mpro-moveBtn', '.mpro-retryBox', '.mpro-retrySlider', '.mpro-reasonBox', '.mpro-reasonCell', '.mpro-tierExact', '.mpro-checkRow', '.mpro-editorChrome{position:sticky', '.mpro-currentTblWrap{max-height:none']) {
+for (const rule of ['.mpro-root', '.mpro-segs', '.mpro-pc', '.mpro-pcActive', '.mpro-pcOff', '.mpro-pill', '.mpro-pillActive', '.mpro-pillOff', '.mpro-verdictOk', '.mpro-discoverBar', '.mpro-step', '.mpro-setupCard', '.mpro-routesTab', '.mpro-statCard', '.mpro-hdotUp', '.mpro-routeRow', '.mpro-targetRow', '.mpro-dragHandle', '.mpro-targetRowOver', '.mpro-moveBtn', '.mpro-retryBox', '.mpro-retrySlider', '.mpro-reasonBox', '.mpro-configPanel', '.mpro-configField', '.mpro-configLabel', '.mpro-rowAction', '.mpro-reasonGrid', '.mpro-tierExact', '.mpro-checkRow', '.mpro-editorChrome{position:sticky', '.mpro-currentTblWrap{max-height:none']) {
   assert(css.includes(rule), `styles include ${rule}`)
 }
 
@@ -553,19 +587,59 @@ const renderModels = () => {
   return nodes
 }
 const settle = () => new Promise((r) => setTimeout(r, 10))
-const formControl = (nodes, tag, label) => nodes.find((n) => n.tag === tag && n.props?.['aria-label'] === label)
 const buttonByText = (nodes, text) => nodes.find((n) => n.tag === 'button' && n.text === text)
 const lastApply = () => remoteCalls.filter((c) => c.method === 'applyModels').at(-1)
 const modelRow = (nodes, id) => nodes.find((n) => n.tag === 'tr' && n.text.includes(id))
+
+/**
+ * 行内只剩一个「配置」入口：能力徽标、来源说明、能力下拉、转发名、档位摘要全部在
+ * 展开面板里（一次只开一个）。所以断言某个模型的字段之前必须先展开它 ——
+ * 这两个助手把"展开 + 重渲染"合并进同一个调用，后续断言仍然按字段读。
+ */
+const openPanel = (nodes, id) => {
+  const opener = nodes.find((n) => n.tag === 'button' && n.props?.['data-row'] === id)
+  assert(opener, `row ${id} exposes its configuration entry`)
+  if (opener.props['aria-expanded'] === true) return nodes
+  opener.onClick()
+  return renderModels()
+}
+const panelFor = (id) => openPanel(renderModels(), id)
+
+// 找不到控件时先展开它所属的行（aria-label 的后缀就是模型 id）。
+const formControl = (nodes, tag, label) => {
+  const direct = nodes.find((n) => n.tag === tag && n.props?.['aria-label'] === label)
+  if (direct) return direct
+  const id = String(label).split(': ').at(-1)
+  const opener = nodes.find((n) => n.tag === 'button' && n.props?.['data-row'] === id)
+  if (!opener) return undefined
+  opener.onClick()
+  return renderModels().find((n) => n.tag === tag && n.props?.['aria-label'] === label)
+}
+
 let modelNodes = renderModels()
-assert(modelNodes.some((n) => n.tag === 'span' && n.text === 'inputTextOnly'), 'known text models have a text-only badge')
-assert(modelNodes.some((n) => n.tag === 'span' && n.text === 'inputTextImage'), 'known image models have an image-capability badge')
-assert(modelNodes.some((n) => n.tag === 'span' && n.text === 'inputUnknown'), 'missing capability is unconfirmed, not text-only')
+
+// 行内不再有任何控件：只有一个"配置"入口按钮。
+{
+  const rowAt = modelNodes.findIndex((n) => n.tag === 'tr' && n.text.includes('known-image-model'))
+  assert(rowAt >= 0, 'the model row is rendered')
+  const row = []
+  for (let i = rowAt; i < modelNodes.length && (i === rowAt || modelNodes[i].tag !== 'tr'); i++) row.push(modelNodes[i])
+  assert(row.filter((n) => n.tag === 'td').length === 4, `a model row is four cells, got ${row.filter((n) => n.tag === 'td').length}`)
+  assert(row.some((n) => n.tag === 'input' && n.props?.type === 'checkbox'), 'the row keeps its selection checkbox')
+  assert(row.filter((n) => n.tag === 'button').length === 1 && row.find((n) => n.tag === 'button').text === 'Configure', 'the row carries exactly one Configure entry')
+  assert(!row.some((n) => n.tag === 'select' || n.tag === 'code' || String(n.className).includes('mpro-configPanel')), 'no capability, wire-name or level summary is inlined into the row')
+}
+
+// 展开后的面板：能力徽标、来源说明、冲突与参考元数据都在这里。
+assert(panelFor('deepseek-v4.1-flash').some((n) => n.tag === 'span' && n.text === 'inputTextOnly'), 'a declared text-only model shows its badge in the panel')
+assert(panelFor('known-image-model').some((n) => n.tag === 'span' && n.text === 'inputTextImage'), 'a catalog image model shows its badge in the panel')
+assert(panelFor('custom-vision-name').some((n) => n.tag === 'span' && n.text === 'inputUnknown'), 'missing capability is unconfirmed, not text-only')
+assert(panelFor('deepseek-v4.1-flash').some((n) => n.text === 'Old configuration (unknown source)'), 'the panel explains a legacy capability source')
+assert(panelFor('known-image-model').some((n) => n.text === 'Model catalog'), 'the panel names the catalog as the source')
+assert(panelFor('known-image-model').some((n) => n.text.includes('Catalog labels differ')) && panelFor('known-image-model').some((n) => n.text.includes('Synthetic catalog reference')), 'the panel displays conflict and reference metadata')
 assert(formControl(modelNodes, 'select', 'inputCapabilityCol: custom-vision-name')?.props.value === 'auto', 'vision-like names without metadata stay automatic/unconfirmed')
 assert(formControl(modelNodes, 'select', 'inputCapabilityCol: deepseek-v4.1-flash')?.props.value === 'auto', 'old configured text is not mistaken for a manual selection')
 assert(formControl(modelNodes, 'select', 'inputCapabilityCol: known-image-model')?.props.value === 'auto', 'catalog image capability stays in automatic mode')
-assert(modelNodes.some((n) => n.text === 'Old configuration (unknown source)') && modelNodes.some((n) => n.text === 'Model catalog'), 'model rows explain legacy and catalog capability sources')
-assert(modelNodes.some((n) => n.text.includes('Catalog labels differ')) && modelNodes.some((n) => n.text.includes('Synthetic catalog reference')), 'model rows display conflict and reference metadata')
 
 // Manual capability is carried in the saved model, and automatic resets send
 // an explicit release rather than silently keeping the previous choice.
@@ -585,8 +659,9 @@ assert(!Object.hasOwn(lastApply().payload.models.find((m) => m.id === 'deepseek-
 const untouched = lastApply().payload.models.find((m) => m.id === 'deepseek-v4.1-flash')
 assert(untouched.name === 'Legacy model' && untouched.contextWindow === 128000 && untouched.maxTokens === 4096 && untouched.requestModel === 'wire-chat', 'ordinary save retains model names, limits and wire mapping')
 modelNodes = renderModels()
+// The panel closes and reopens with the saved state; both manual choices survive.
 assert(formControl(modelNodes, 'select', 'inputCapabilityCol: known-image-model')?.props.value === 'text' && formControl(modelNodes, 'select', 'inputCapabilityCol: custom-vision-name')?.props.value === 'image', 'only confirmed manual sources select manual capability options')
-assert(modelNodes.some((n) => n.text === 'Set manually in this plugin'), 'manual source is visible')
+assert(panelFor('known-image-model').some((n) => n.text === 'Set manually in this plugin'), 'the panel shows the manual source')
 formControl(modelNodes, 'select', 'inputCapabilityCol: custom-vision-name').onChange({ target: { value: 'auto' } })
 modelNodes = renderModels()
 buttonByText(modelNodes, 'saveModelConfig').onClick()
@@ -705,20 +780,170 @@ buttonByText(modelNodes, 'addModelBtn').onClick()
 await settle()
 assert(!Object.hasOwn(lastApply().payload.models[0], 'input'), 'custom model add with automatic detection omits input rather than resetting it')
 
-// -- thinking levels: the list states what each model declares, and the editor
-// -- opens on demand. The declaration cannot be discovered or probed, so showing
-// -- the current value IS the feature, not decoration.
-assert(outA.some((n) => String(n.className).includes('mpro-reasonCell')), 'the model list carries a thinking-level column')
-{
-  // Mocked models declare nothing, so every row must read as "inherit" rather
-  // than implying a capability the settings file never stated.
-  const tags = outA.filter((n) => String(n.className).includes('mpro-reasonTag'))
-  assert(tags.length >= 2, `every model row shows its declaration, got ${tags.length}`)
-  assert(tags.every((n) => /reasonInherit/.test(n.text || '')), 'an undeclared model reads as inherit: ' + JSON.stringify(tags.map((n) => n.text)))
-  assert(!outA.some((n) => String(n.className).includes('mpro-reasonBox')), 'the editor stays closed until asked')
+// -- 隐藏 / 显示：模型级"摘下再放回"，与"删除选中"区分开 ----------------------
+// 这一段同时钉住三件用户提出的事：配置区不再产生横向滚动、大列表只渲染一页、
+// 以及"隐藏"的解释与确认只在第一次出现。
+const checkboxInRow = (nodes, id) => {
+  const at = nodes.findIndex((n) => n.tag === 'tr' && n.text.includes(id))
+  if (at < 0) return undefined
+  for (let i = at; i < nodes.length; i++) {
+    if (i > at && nodes[i].tag === 'tr') break
+    if (nodes[i].tag === 'input' && nodes[i].props?.type === 'checkbox') return nodes[i]
+  }
+  return undefined
+}
+const hideBtn = (nodes) => nodes.find((n) => n.tag === 'button' && /^Hide selected/.test(n.text || ''))
+// JSX interleaves the count as its own text node, so whitespace differs from the
+// rendered string; normalise before matching "(N)".
+const tight = (node) => String(node?.text || '').replace(/\s+/g, '')
+// The discovered table renders above the current one, so the LAST matching
+// action in document order is the current list's.
+const currentAction = (nodes, text) => nodes.filter((n) => n.tag === 'button' && n.text === text).at(-1)
 
-  const setBtn = outA.find((n) => n.tag === 'button' && /reasonEdit/i.test(n.text || ''))
-  assert(setBtn && typeof setBtn.onClick === 'function', 'each row has a thinking-level Set button')
+modelNodes = renderModels()
+// 配置控件仍在（aria-label 不变，所以可用/可测），但只有一个会换行的单元格：
+// 表格列数从 6 降到 4，横向不再需要滚动。
+// 只统计"当前模型"那张表的表头：发现表与隐藏表在文档里也有 th。
+const currentTableAt = modelNodes.findIndex((n) => n.tag === 'table' && String(n.className).includes('mpro-currentTbl'))
+assert(currentTableAt >= 0, 'the current-model table is identifiable')
+const headerCells = []
+for (let i = currentTableAt; i < modelNodes.length; i++) {
+  if (i > currentTableAt && modelNodes[i].tag === 'table') break
+  if (modelNodes[i].tag === 'th') headerCells.push(modelNodes[i])
+}
+assert(headerCells.length === 4, `the current table is four columns wide, got ${headerCells.length}`)
+assert(!headerCells.some((n) => n.text === 'inputCapabilityCol' || n.text === 'reqModelField'), 'per-control columns are gone from the header')
+
+// 行内不渲染任何字段；字段只在展开面板里按行排（label 固定窄列 + 控件自适应）。
+{
+  const rowAt = modelNodes.findIndex((n) => n.tag === 'tr' && n.text.includes('known-image-model'))
+  const row = []
+  for (let i = rowAt; i < modelNodes.length && (i === rowAt || modelNodes[i].tag !== 'tr'); i++) row.push(modelNodes[i])
+  assert(!row.some((n) => String(n.className).includes('mpro-configPanel')), 'the panel is not inlined before it is opened')
+}
+modelNodes = panelFor('known-image-model')
+assert(modelNodes.some((n) => String(n.className).includes('mpro-configPanel')), 'opening a row reveals its configuration panel')
+assert(modelNodes.filter((n) => String(n.className).includes('mpro-configField')).length === 3, 'the panel lays its fields out one per line')
+assert(modelNodes.some((n) => String(n.className).includes('mpro-configLabel')), 'each field carries its own label instead of a column header')
+assert(modelNodes.some((n) => n.tag === 'button' && n.text === 'Edit levels'), 'the panel opens the level editor from inside')
+assert(panelFor('known-image-model').some((n) => n.tag === 'button' && n.text === 'Collapse'), 'the open row offers a way to close it')
+// 收起后再看：面板不在了，行又只剩一个入口。
+modelNodes.find((n) => n.tag === 'button' && n.text === 'Collapse').onClick()
+modelNodes = renderModels()
+assert(!modelNodes.some((n) => String(n.className).includes('mpro-configPanel')), 'collapsing removes the panel again')
+
+// 隐藏区：第一次进入时它解释自己；确认框与说明只出现一次。
+assert(modelNodes.some((n) => n.tag === 'p' && n.text.includes('Hidden (1)')), 'the models tab renders the hidden list with its count')
+assert(modelNodes.some((n) => n.tag === 'tr' && n.text.includes('archived-model') && n.text.includes('wire-arch')), 'a parked model is listed with its wire mapping')
+assert(modelNodes.some((n) => n.tag === 'button' && n.text === 'Show'), 'each hidden model offers a Show action')
+assert(!hideBtn(modelNodes), 'the hide action is absent until something is selected')
+
+currentAction(modelNodes, 'selectAll').onClick()
+modelNodes = renderModels()
+assert(hideBtn(modelNodes)?.props.disabled, 'hiding the last visible model is disabled instead of failing server-side')
+assert(hideBtn(modelNodes).props.title.includes('at least one model entry'), 'the disabled hide action explains why')
+currentAction(modelNodes, 'unselectAll').onClick()
+modelNodes = renderModels()
+assert(!hideBtn(modelNodes), 'clearing the selection removes the hide action again')
+
+checkboxInRow(modelNodes, 'deepseek-v4.1-flash').onChange()
+modelNodes = renderModels()
+assert(hideBtn(modelNodes) && !hideBtn(modelNodes).props.disabled, 'the hide action is enabled for a non-last model')
+assert(tight(hideBtn(modelNodes)).includes('(1)'), 'the hide action reports the selection count')
+assert(hideBtn(modelNodes).props.title.length > 0, 'the first-time hide action carries the explanation as a tooltip')
+assert(confirmCalls.length === 0, 'nothing is confirmed before the action runs')
+hideBtn(modelNodes).onClick()
+await settle()
+assert(confirmCalls.length === 1 && confirmCalls[0].includes('Hide the 1 selected'), 'the first hide asks for confirmation once')
+assert(lastApply().payload.mode === 'hide' && lastApply().payload.models.length === 1 && lastApply().payload.models[0].id === 'deepseek-v4.1-flash', 'hide sends exactly the selected ids in hide mode')
+modelNodes = renderModels()
+assert(inlineStatus(modelNodes)?.text.includes('Hid 1 model'), 'hiding reports how many models this call parked')
+const hiddenHeading = modelNodes.findIndex((n) => n.tag === 'p' && n.text.includes('Hidden (2)'))
+assert(hiddenHeading >= 0, 'the hidden count follows the freshly parked entry')
+assert(modelNodes.slice(hiddenHeading).some((n) => n.tag === 'tr' && n.text.includes('deepseek-v4.1-flash')), 'the freshly hidden model appears in the hidden list')
+assert(!modelNodes.slice(0, hiddenHeading).some((n) => n.tag === 'tr' && n.text.includes('deepseek-v4.1-flash')), 'the hidden model is gone from the live model list')
+assert(uiPrefsState.hiddenModelsHintSeen === true, 'the explanation is marked as seen the moment it has been shown')
+currentAction(modelNodes, 'unselectAll').onClick()
+modelNodes = renderModels()
+checkboxInRow(modelNodes, 'known-image-model').onChange()
+modelNodes = renderModels()
+assert(hideBtn(modelNodes).props.title === undefined, 'the explanation tooltip never comes back')
+
+// 第二次隐藏：不再解释、不再确认（隐藏可逆，重复解释只是噪音）。
+const confirmsBefore = confirmCalls.length
+hideBtn(modelNodes).onClick()
+await settle()
+assert(confirmCalls.length === confirmsBefore, 'a later hide runs without asking again')
+assert(lastApply().payload.mode === 'hide', 'the second hide still writes')
+
+// 显示回去：列表清空后，整个区块退场（不再占位置）。
+currentAction(modelNodes, 'unselectAll').onClick()
+modelNodes = renderModels()
+const showButtons = modelNodes.filter((n) => n.tag === 'button' && n.text === 'Show')
+assert(showButtons.length === 3, `each parked model has a Show action, got ${showButtons.length}`)
+showButtons[0].onClick()
+await settle()
+assert(lastApply().payload.mode === 'show' && lastApply().payload.models[0].id === 'archived-model', 'Show sends the parked id in show mode')
+assert(inlineStatus(renderModels())?.text.includes('Restored 1 model'), 'showing reports how many entries went back')
+modelNodes = renderModels()
+assert(modelNodes.some((n) => n.tag === 'p' && n.text.includes('Hidden (2)')), 'the count follows the remaining parked entries')
+modelNodes.find((n) => n.tag === 'button' && n.text === 'Show all').onClick()
+await settle()
+modelNodes = renderModels()
+assert(!modelNodes.some((n) => n.tag === 'p' && n.text.includes('Hidden (')), 'once nothing is parked the hidden block disappears entirely')
+assert(!modelNodes.some((n) => n.tag === 'button' && n.text === 'Show'), 'no Show actions remain')
+
+// 复原世界：把测试开始时寄存的条目重新隐藏，后面的段落看到相同的模型行。
+checkboxInRow(modelNodes, 'archived-model').onChange()
+modelNodes = renderModels()
+hideBtn(modelNodes).onClick()
+await settle()
+modelNodes = renderModels()
+assert(modelNodes.some((n) => n.tag === 'p' && n.text.includes('Hidden (1)')), 'the world is back to its starting hidden set')
+
+// -- 大列表只渲染一页（"模型太多进编辑器就卡"的直接回归） --------------------
+{
+  const before = modelState.map((m) => ({ ...m }))
+  modelState = Array.from({ length: 60 }, (_, i) => ({ id: `bulk-${String(i).padStart(2, '0')}`, name: `Bulk ${i}` }))
+  // 重新拉取一次列表（识别会刷新模型列表）。
+  buttonByText(renderModels(), 'identifyCapabilities').onClick()
+  await settle()
+  let bulkNodes = renderModels()
+  const renderedRows = () => bulkNodes.filter((n) => n.tag === 'tr' && /bulk-\d\d/.test(String(n.text || ''))).length
+  assert(renderedRows() === 40, `only the first page of a 60-model list renders, got ${renderedRows()}`)
+  const more = bulkNodes.find((n) => n.tag === 'button' && /^Show more/.test(n.text || ''))
+  assert(more && more.text.includes('20'), `the rest is offered explicitly with its remaining count, got ${more?.text}`)
+  more.onClick()
+  bulkNodes = renderModels()
+  assert(renderedRows() === 60, 'the next page renders on demand')
+  assert(!bulkNodes.some((n) => n.tag === 'button' && /^Show more/.test(n.text || '')), 'the pager disappears once everything is rendered')
+  // 复原
+  modelState = before
+  buttonByText(bulkNodes, 'identifyCapabilities').onClick()
+  await settle()
+  modelNodes = renderModels()
+}
+
+// 搜索会把窗口收回去，避免"先加载一页、再被过滤"的错位。
+checkboxInRow(modelNodes, 'known-image-model').onChange()
+modelNodes = renderModels()
+currentAction(modelNodes, 'unselectAll').onClick()
+modelNodes = renderModels()
+
+// -- thinking levels: the panel states what the model declares, and the editor
+// -- opens on demand from inside it. The declaration cannot be discovered or
+// -- probed, so showing the current value IS the feature, not decoration.
+{
+  // Mocked models declare nothing, so the panel must read as "inherit" rather
+  // than implying a capability the settings file never stated.
+  const opened = panelFor('known-image-model')
+  const tags = opened.filter((n) => String(n.className).includes('mpro-reasonTag'))
+  assert(tags.length === 1, `the open panel shows its declaration, got ${tags.length}`)
+  assert(tags.every((n) => /reasonInherit/.test(n.text || '')), 'an undeclared model reads as inherit: ' + JSON.stringify(tags.map((n) => n.text)))
+  assert(!opened.some((n) => String(n.className).includes('mpro-reasonBox')), 'the editor stays closed until asked')
+
+  const setBtn = opened.find((n) => n.tag === 'button' && n.text === 'Edit levels')
+  assert(setBtn && typeof setBtn.onClick === 'function', 'the panel opens the level editor on demand')
   setBtn.onClick()
   const warm = []
   renderAt(tree, fake, 'root', warm)
@@ -747,6 +972,14 @@ assert(outA.some((n) => String(n.className).includes('mpro-reasonCell')), 'the m
   // could never be declared.
   const levelChecks = outLv.filter((n) => n.props && n.props.type === 'checkbox')
   assert(levelChecks.length >= 7, `all seven thinking levels are listed, got ${levelChecks.length}`)
+  // 每档一格、可换行：档名与 wire 输入都在同一格里，输入框自适应——
+  // 固定宽度（旧的 180px）正是把高级区撑到溢出的那一项。
+  const levelItems = outLv.filter((n) => String(n.className).includes('mpro-reasonLevelItem'))
+  assert(levelItems.length === 7, `each level gets its own wrapping cell, got ${levelItems.length}`)
+  const wireInputs = outLv.filter((n) => n.tag === 'input' && String(n.className).includes('mpro-reasonWire'))
+  assert(wireInputs.length === 7, `each level cell carries its own wire field, got ${wireInputs.length}`)
+  assert(outLv.some((n) => String(n.className).includes('mpro-reasonGrid')), 'the level cells live in a wrapping grid')
+  assert(!outLv.some((n) => n.text === 'reasonLevelCol'), 'the fixed three-column level table is gone')
   // With the catalog disabled the fetch button must not exist at all.
   assert(!outLv.some((n) => n.tag === 'button' && /reasonLookup\b/i.test(n.text || '')), 'no catalog button while the lookup is disabled')
   assert(outLv.some((n) => /reasonLookupOff/i.test(n.text || '')), 'the editor explains that the lookup is off')
@@ -755,6 +988,31 @@ assert(outA.some((n) => String(n.className).includes('mpro-reasonCell')), 'the m
   // worse teacher than a disabled button.
   const saveBtn = outLv.find((n) => n.tag === 'button' && /^save$/i.test((n.text || '').trim()))
   assert(saveBtn && saveBtn.props.disabled === true, 'save is blocked while no level is selected')
+}
+
+// -- 思考等级不再把行撑宽：初级区只显示"几档"，完整档位名进 title 与高级区 ------
+{
+  const ALL_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+  const declared = Object.fromEntries(ALL_LEVELS.map((l) => [l, l === 'off' ? null : l]))
+  modelState = modelState.map((m) => (m.id === 'known-image-model' ? { ...m, reasoningEfforts: { ...declared } } : m))
+  buttonByText(renderModels(), 'identifyCapabilities').onClick()
+  await settle()
+  // 面板关闭时行内没有档位文本；打开后摘要必须是短计数，完整档位名只在 tooltip 里。
+  const stillOpen = renderModels()
+  const collapse = stillOpen.find((n) => n.tag === 'button' && n.text === 'Collapse')
+  if (collapse) collapse.onClick()
+  const closed = renderModels()
+  assert(!closed.some((n) => String(n.className).includes('mpro-reasonTag')), 'a closed row renders no level text at all')
+  const nodes = panelFor('known-image-model')
+  const tag = nodes.find((n) => n.tag === 'code' && String(n.className).includes('mpro-reasonTag') && n.text === '7 levels')
+  assert(tag, 'a seven-level declaration collapses to a short count, not the level list: ' + JSON.stringify(nodes.filter((n) => String(n.className).includes('mpro-reasonTag')).map((n) => n.text)))
+  assert(tag.props.title === ALL_LEVELS.join(' · '), 'the full level spelling stays available as the tooltip, got ' + JSON.stringify(tag.props.title))
+  assert(nodes.some((n) => n.tag === 'button' && n.text === 'Edit levels'), 'the panel opens the level editor')
+  // 复原，后面的段落看到相同的声明状态
+  modelState = modelState.map(({ reasoningEfforts: _drop, ...m }) => m)
+  buttonByText(renderModels(), 'identifyCapabilities').onClick()
+  await settle()
+  renderModels()
 }
 
 const backBtn = outA.find((n) => n.tag === 'button' && /^←\s*back$/i.test((n.text || '').trim()))

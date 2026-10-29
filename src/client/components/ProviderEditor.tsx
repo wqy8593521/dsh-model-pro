@@ -49,6 +49,7 @@ export function ProviderEditor({ t, call, data, initialTab, onBack }: Props) {
   const [protocols, setProtocols] = React.useState(['openai-completions', 'openai-responses', 'anthropic-messages'])
   const [headers, setHeaders] = React.useState<HeaderPair[]>(data.headers?.length ? data.headers : [])
   const [models, setModels] = React.useState<ModelEntry[]>(data.models || [])
+  const [hiddenModels, setHiddenModels] = React.useState<ModelEntry[]>(data.hiddenModels || [])
   const [availableModels, setAvailableModels] = React.useState<string[]>(data.availableModels || [])
   const [discovered, setDiscovered] = React.useState<DiscoveredModel[] | null>(null)
   const [selectedIds, setSelectedIds] = React.useState<Record<string, boolean>>({})
@@ -148,6 +149,8 @@ export function ProviderEditor({ t, call, data, initialTab, onBack }: Props) {
         protocols={protocols}
         models={models}
         setModels={setModels}
+        hiddenModels={hiddenModels}
+        setHiddenModels={setHiddenModels}
         discovered={discovered}
         setDiscovered={setDiscovered}
         selectedIds={selectedIds}

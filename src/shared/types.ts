@@ -256,6 +256,16 @@ export interface ProviderListItem {
   hasSecret: boolean
 }
 
+/** One parked model as the editor reads it back (see `hiddenModels` above).
+ *
+ * The entry itself is COMPLETE — `reasoningEfforts` / `compat` / `requestModel`
+ * and hand-typed caps travel with it, because llm-pi-ai's discovery flow can
+ * only ever return id / name / contextWindow / maxTokens / input. */
+export interface HiddenModelView extends ModelEntry {
+  /** Position in the original list, so 「显示」 inserts it back where it was. */
+  index?: number
+}
+
 /** Result from get-provider handler */
 export interface ProviderData {
   ok: true
@@ -267,6 +277,9 @@ export interface ProviderData {
   disabled: boolean
   headers: HeaderPair[]
   models: ModelEntry[]
+  /** Models the user parked in the hidden archive — taken out of the model
+   * selector but stored complete, so 「显示」 puts back exactly what was摘掉的. */
+  hiddenModels?: HiddenModelView[]
   usesCatalog: boolean
   /** Advertised model ids for the test dropdown (advisory; may be empty). */
   availableModels?: string[]

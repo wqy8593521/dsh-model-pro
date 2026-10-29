@@ -4,7 +4,8 @@ import { readProviders, readDisabled, readProfile, readRealModels } from '../uti
 import type { HostCtx } from '../utils'
 import type { HeaderPair } from '../../shared/types'
 import { PLACEHOLDER_MODEL_ID } from '../../shared/constants'
-import { describeModelInput } from '../modelCapabilities'
+import { describeModelInputs } from '../modelCapabilities'
+import { readHiddenState, hiddenFor } from '../hiddenModels'
 import { decryptSecret } from '../crypto'
 
 export async function getProvider(ctx: HostCtx, args: { route?: string; includeSecret?: boolean }) {
@@ -23,11 +24,21 @@ export async function getProvider(ctx: HostCtx, args: { route?: string; includeS
     p.headers && typeof p.headers === 'object'
       ? Object.entries(p.headers).map(([k, v]) => ({ name: k, value: String(v) }))
       : []
-  // readRealModels already strips the schema sentinel; describeModelInput then
-  // attaches the DISPLAY-side capability fields (source/conflict/reference)
-  // from plugin state and the live catalog. Native entries never carry them.
-  const models = await Promise.all(readRealModels(p).map((m) => describeModelInput(ctx, route, m)))
+  // readRealModels already strips the schema sentinel; describeModelInputs then
+  // attaches the DISPLAY-side capability fields (source/conflict/reference) from
+  // plugin state and the live catalog, reading that state ONCE for the whole
+  // list — the per-entry loop made a large provider's editor open slowly on 0.2.
+  // Native entries never carry these fields.
+  const models = await describeModelInputs(ctx, route, readRealModels(p))
   const hasExplicit = models.length > 0
+
+  // 隐藏区：条目已从 `providers` 摘出，只能从这里读回来。返回完整条目（含
+  // description 不提供的 reasoningEfforts / compat / requestModel），显示时原样放回。
+  // `capability` 是内部来源记录，展示侧不需要，刻意不返回。
+  const hiddenModels = (hiddenFor(readHiddenState(st), route)?.entries ?? []).map((item) => ({
+    ...item.model,
+    index: item.index,
+  }))
 
   // Advertised model ids for the test dropdown (advisory; may be empty). For a
   // catalog-route (or enabled custom) provider this is the real list the
@@ -76,6 +87,7 @@ export async function getProvider(ctx: HostCtx, args: { route?: string; includeS
     disabled: isDisabled,
     headers,
     models,
+    hiddenModels,
     usesCatalog: !hasExplicit,
     availableModels,
     hasSecret,

@@ -1184,9 +1184,10 @@ await P('set-route', { alias: 'auto-camel', strategy: 'priority', targets: [{ pr
   assert((lg2.entries || []).some((e) => e.route === 'auto-camel'), 're-applied fiber re-hydrates request-log tail')
 }
 
-// --- ui prefs: badge toggle persists under llm-pi-ai[uiPrefs] and merges ---
+// --- ui prefs: tiny UI choices persist in the plugin's OWN section and merge ---
 r = await P('get-ui-prefs')
 assert(r.ok && r.prefs && r.prefs.showRouteBadge === true, 'ui prefs default to showRouteBadge=true: ' + JSON.stringify(r))
+assert(r.prefs.hiddenModelsHintSeen === false, 'the hidden-model explanation is unseen by default: ' + JSON.stringify(r.prefs))
 r = await P('set-ui-prefs', { prefs: { showRouteBadge: false } })
 assert(r.ok && r.prefs.showRouteBadge === false, 'set-ui-prefs flips the badge off')
 r = await P('get-ui-prefs')
@@ -1194,8 +1195,17 @@ assert(r.prefs.showRouteBadge === false, 'get-ui-prefs reflects the saved value'
 assert(store.own().uiPrefs && typeof store.own().uiPrefs === 'object', 'uiPrefs persisted in the plugin-owned section: ' + JSON.stringify(Object.keys(store.own())))
 r = await P('list-routes')
 assert(r.ok && r.routes && Object.keys(r.routes).length >= 1, 'uiPrefs write preserved sibling keys (routes intact)')
+// A partial patch must not reset the keys it does not mention — the client sends
+// only the key it is changing (e.g. "the hide explanation has been shown").
+r = await P('set-ui-prefs', { prefs: { showRouteBadge: false, hiddenModelsHintSeen: true } })
+assert(r.ok && r.prefs.hiddenModelsHintSeen === true, 'the hide explanation can be marked as seen')
 r = await P('set-ui-prefs', { prefs: { showRouteBadge: true } })
 assert(r.ok && r.prefs.showRouteBadge === true, 'set-ui-prefs restores the default')
+assert(r.prefs.hiddenModelsHintSeen === true, 'a later partial patch keeps the other preference')
+r = await P('get-ui-prefs')
+assert(r.prefs.hiddenModelsHintSeen === true, 'get-ui-prefs reflects the seen flag')
+r = await P('set-ui-prefs', { prefs: { hiddenModelsHintSeen: false } })
+assert(r.ok && r.prefs.hiddenModelsHintSeen === false, 'and it can be reset')
 
 // --- retry budget: the policy DSH freezes at adapter registration ------------
 // A routed failure used to normalize to code UNKNOWN, which no retry policy

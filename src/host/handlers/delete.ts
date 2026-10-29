@@ -3,6 +3,7 @@
 import type { HostCtx } from '../utils'
 import { readProviders, readDisabled, checkWritable, writeSection } from '../utils'
 import { readCapabilityState, saveCapabilities, withCapabilityWrite } from '../capabilityStore'
+import { readHiddenState, writeHiddenState, clearHiddenFor } from '../hiddenModels'
 
 export async function deleteProvider(ctx: HostCtx, args: { route?: string }) {
   const st = ctx.get('settings')
@@ -45,6 +46,16 @@ async function deleteProviderLocked(ctx: HostCtx, args: { route?: string }) {
   } catch (err) {
     return { ok: false as const, error: String((err as Error)?.message || err) }
   }
+
+  // The hidden archive is keyed by route: once the provider is gone, those entries
+  // have no owner and no way back into a model list (`restoreDisabledOnUnload`
+  // deliberately skips orphan routes). Dropping them here is what keeps the
+  // section from accumulating invisible model data forever. Best effort: the
+  // deletion itself already succeeded, and a failure only leaves dead state.
+  try {
+    const cleared = clearHiddenFor(readHiddenState(st), route)
+    if (cleared.removed.length) await writeHiddenState(st, cleared.state)
+  } catch { /* best effort */ }
 
   return { ok: true as const, route }
 }

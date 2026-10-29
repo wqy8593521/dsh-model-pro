@@ -19,6 +19,9 @@ interface Props {
   protocols: string[]
   models: ModelEntry[]
   setModels: React.Dispatch<React.SetStateAction<ModelEntry[]>>
+  /** 已隐藏（寄存的）模型：从模型选择器里摘出，但条目完整保留，可原样放回。 */
+  hiddenModels: ModelEntry[]
+  setHiddenModels: React.Dispatch<React.SetStateAction<ModelEntry[]>>
   discovered: DiscoveredModel[] | null
   setDiscovered: React.Dispatch<React.SetStateAction<DiscoveredModel[] | null>>
   selectedIds: Record<string, boolean>
@@ -49,6 +52,16 @@ interface AddDraft {
   capability: CapabilityChoice
 }
 
+/**
+ * How many current models render at once.
+ *
+ * A provider can legitimately own hundreds of models, and every extra row is a
+ * checkbox plus badge, select and two inputs in the DOM. Rendering all of them on
+ * mount is what made opening the model editor feel sluggish; the rest arrive on
+ * demand (or immediately when a search narrows the list down).
+ */
+const ROW_PAGE = 40
+
 /** The user-facing capability choice: `auto` defers to backend detection. */
 type CapabilityChoice = 'auto' | 'text' | 'image'
 
@@ -62,7 +75,7 @@ const capabilityInput = (choice: Exclude<CapabilityChoice, 'auto'>): Array<'text
   choice === 'image' ? ['text', 'image'] : ['text']
 
 export function ModelsPanel({
-  t, call, route, info, set, protocols, models, setModels,
+  t, call, route, info, set, protocols, models, setModels, hiddenModels, setHiddenModels,
   discovered, setDiscovered, selectedIds, setSelectedIds,
   apiKeyProbe, setApiKeyProbe, busy, setBusy, setStatus, fail, inlineStatus,
 }: Props) {
@@ -80,15 +93,29 @@ export function ModelsPanel({
   const [capabilityDraft, setCapabilityDraft] = React.useState<Record<string, CapabilityChoice>>({})
   // Whether the wire-name inputs have unsaved edits (same contract as above).
   const [mappingDirty, setMappingDirty] = React.useState(false)
-  // Which model's thinking-level editor is open (one at a time: the panel is a
-  // detail view, and two open editors could disagree about the same list).
+  // Which model's configuration panel is open, and whether its thinking-level
+  // editor is revealed inside it. One row at a time: the panel is a detail view,
+  // and two open panels could show two drafts of the same list.
+  const [configFor, setConfigFor] = React.useState<string | null>(null)
   const [reasonFor, setReasonFor] = React.useState<string | null>(null)
+  const toggleConfig = (id: string) => {
+    const next = configFor === id ? null : id
+    setConfigFor(next)
+    // 收起面板时一并收起档位编辑器，避免下次展开时停在半开状态。
+    if (next === null) setReasonFor(null)
+  }
   // Whether the bulk local-catalog fill panel is open.
   const [fillOpen, setFillOpen] = React.useState(false)
   // Catalog preferences, loaded once. `null` = still loading; the editor treats
   // it as disabled until it arrives, so no fetch can happen before the toggle
   // has actually been read.
   const [catalog, setCatalog] = React.useState<{ enabled: boolean; url: string } | null>(null)
+  // How many rows of the current list are rendered (see ROW_PAGE).
+  const [shownRows, setShownRows] = React.useState(ROW_PAGE)
+  // Whether the user has already been told how hiding works. Defaults to false so
+  // a runtime that cannot answer the preference still explains it once per page
+  // rather than never; the host value turns it off for good after the first hide.
+  const [hideHintSeen, setHideHintSeen] = React.useState(false)
 
   React.useEffect(() => {
     void (async () => {
@@ -96,6 +123,15 @@ export function ModelsPanel({
         const r = await call('get-catalog-prefs')
         setCatalog({ enabled: r?.prefs?.enabled === true, url: r?.effectiveUrl || '' })
       } catch { setCatalog({ enabled: false, url: '' }) }
+    })()
+  }, [call])
+
+  React.useEffect(() => {
+    void (async () => {
+      try {
+        const r = await call('get-ui-prefs')
+        setHideHintSeen(r?.prefs?.hiddenModelsHintSeen === true)
+      } catch { /* 读不到偏好就当作没看过：多解释一次比永不解释安全 */ }
     })()
   }, [call])
 
@@ -175,8 +211,10 @@ export function ModelsPanel({
     const fresh = await call('get-provider', { route })
     const list: ModelEntry[] = fresh.models || []
     setModels(list)
+    setHiddenModels(fresh.hiddenModels || [])
     setCapabilityDraft({})
     setMappingDirty(false)
+    setShownRows(ROW_PAGE)
     pruneCurSel(list)
     return list
   }
@@ -199,6 +237,46 @@ export function ModelsPanel({
     try {
       const r = await call('apply-models', { route, models: marked, mode: 'remove' })
       setStatus({ kind: 'ok', text: fmt(t('statusModels'), { count: r.count }) })
+      await refreshModels()
+    } catch (e) { fail(e) } finally { setBusy(false) }
+  }
+
+  /** Remember that the user has been told how hiding works.
+   *
+   * Persisted through the shared UI preferences (owned section), so the
+   * explanation and the confirmation appear ONCE and then never again — the
+   * action is reversible by design, and re-explaining it on every use is noise.
+   * Fire-and-forget: a failed write only means the hint returns next page. */
+  const markHideHintSeen = () => {
+    if (hideHintSeen) return
+    setHideHintSeen(true)
+    void Promise.resolve(call('set-ui-prefs', { prefs: { hiddenModelsHintSeen: true } })).catch(() => {})
+  }
+
+  /** 隐藏：把选中的模型从模型选择器里摘出来，条目完整寄存到插件自有分区。
+   * 与「删除选中」的区别是数据去向 —— 隐藏是"原样放回"，删除是丢弃。
+   * 第一次会先解释并确认，之后就静默执行（见 markHideHintSeen）。 */
+  const hideSelected = async () => {
+    const marked = selectedCurrent
+    if (!marked.length) return
+    if (!hideHintSeen && !confirm(fmt(t('hideModelsConfirm'), { n: marked.length }))) return
+    setBusy(true); setStatus(null)
+    try {
+      const r = await call('apply-models', { route, models: marked.map(({ id }) => ({ id })), mode: 'hide' })
+      setStatus({ kind: 'ok', text: fmt(t('statusHidden'), { count: r.parked ?? marked.length }) })
+      setCurSel({})
+      markHideHintSeen()
+      await refreshModels()
+    } catch (e) { fail(e) } finally { setBusy(false) }
+  }
+
+  /** 显示：把寄存的条目按原位插回。来源记录由后端一并恢复。 */
+  const showHidden = async (ids: string[]) => {
+    if (!ids.length) return
+    setBusy(true); setStatus(null)
+    try {
+      const r = await call('apply-models', { route, models: ids.map((id) => ({ id })), mode: 'show' })
+      setStatus({ kind: 'ok', text: fmt(t('statusShown'), { count: r.restored ?? ids.length }) })
       await refreshModels()
     } catch (e) { fail(e) } finally { setBusy(false) }
   }
@@ -299,13 +377,30 @@ export function ModelsPanel({
     } catch (e) { fail(e) } finally { setBusy(false) }
   }
 
-  /** One-glance summary of what a model declares, for the list column. */
-  const reasonLabel = (m: ModelEntry): string => {
+  /** The declared levels themselves, e.g. `off · minimal · … · max`.
+   *
+   * This is the string that made the row as wide as the level list, so it is no
+   * longer rendered inline: it goes into the tooltip and into the advanced
+   * block, while the row shows the SHORT summary below. */
+  const reasonDetail = (m: ModelEntry): string => {
     const v = m.reasoningEfforts
     if (v === false) return t('reasonNone')
     if (v && typeof v === 'object') {
       const levels = THINKING_LEVELS.filter((l) => Object.prototype.hasOwnProperty.call(v, l))
       return levels.length ? levels.join(' · ') : t('reasonInherit')
+    }
+    return t('reasonInherit')
+  }
+
+  /** One-glance summary for the list row: the mode, and how many levels — never
+   * the level names. Width stays bounded no matter how many levels a model
+   * declares (seven of them spelled out is what overflowed the editor). */
+  const reasonLabel = (m: ModelEntry): string => {
+    const v = m.reasoningEfforts
+    if (v === false) return t('reasonNone')
+    if (v && typeof v === 'object') {
+      const levels = THINKING_LEVELS.filter((l) => Object.prototype.hasOwnProperty.call(v, l))
+      return levels.length ? fmt(t('reasonLevelCount'), { n: levels.length }) : t('reasonInherit')
     }
     return t('reasonInherit')
   }
@@ -539,7 +634,7 @@ export function ModelsPanel({
       <div>
         <div className="mpro-modelBar">
           <p className="mpro-sectionTitle" style={{ margin: 0 }}>{fmt(t('currentModelsTitle'), { n: curList.length })}</p>
-          {curList.length > 0 && searchInput(curQ, setCurQ)}
+          {curList.length > 0 && searchInput(curQ, (v) => { setCurQ(v); setShownRows(ROW_PAGE) })}
           <span className="mpro-right" />
           {curList.length > 0 && (
             <>
@@ -569,6 +664,16 @@ export function ModelsPanel({
             </button>
           )}
           {curSelectedCount > 0 && (
+            <button
+              className="mpro-btn mpro-btnSm"
+              disabled={busy || curSelectedCount >= curList.length}
+              title={curSelectedCount >= curList.length ? t('hideLastModelHint') : hideHintSeen ? undefined : t('hideModelsHint')}
+              onClick={() => void hideSelected()}
+            >
+              {t('hideSelected')} ({curSelectedCount})
+            </button>
+          )}
+          {curSelectedCount > 0 && (
             <button className="mpro-btn mpro-btnSm mpro-btnDanger" disabled={busy} onClick={() => void removeSelected()}>
               {t('removeSelected')} ({curSelectedCount})
             </button>
@@ -593,19 +698,17 @@ export function ModelsPanel({
           <div className="mpro-emptyState">{fmt(t('searchNoMatch'), { q: curQ.trim() })}</div>
         ) : (
           <div className="mpro-tblWrap mpro-currentTblWrap">
-            <table className="mpro-tbl">
+            <table className="mpro-tbl mpro-currentTbl">
               <thead>
                 <tr>
                   <th className="mpro-tblCk"></th>
                   <th>{t('idCol')}</th>
                   <th>{t('nameCol')}</th>
-                  <th>{t('inputCapabilityCol')}</th>
-                  <th>{t('reqModelField')}</th>
-                  <th>{t('reasonCol')}</th>
+                  <th>{t('configCol')}</th>
                 </tr>
               </thead>
               <tbody>
-                {curVisible.map((m) => (
+                {curVisible.slice(0, shownRows).map((m) => (
                   <React.Fragment key={m.id}>
                     <tr>
                       <td className="mpro-tblCk">
@@ -613,53 +716,70 @@ export function ModelsPanel({
                       </td>
                       <td className="mpro-id">{m.id}</td>
                       <td>{m.name || m.id}</td>
-                      <td>
-                        <div className="mpro-capabilityCell">
-                          {capabilityBadge(m)}
-                          {capabilitySelect(
-                            draftCapability(m.id) ?? (m.capabilitySource === 'manual' ? capabilityChoice(m) : 'auto'),
-                            (choice) => setCapabilityDraft((d) => ({ ...d, [m.id]: choice })),
-                            `${t('inputCapabilityCol')}: ${m.id}`,
-                          )}
-                        </div>
-                      </td>
-                      <td>
-                        <input
-                          aria-label={`${t('reqModelField')}: ${m.id}`}
-                          title={t('reqModelHint')}
-                          className="mpro-input mpro-inputMono"
-                          style={{ width: 150 }}
-                          disabled={busy}
-                          value={m.requestModel || ''}
-                          placeholder="—"
-                          onChange={(e) => void setRequestModel(m.id, e.target.value)}
-                        />
-                      </td>
-                      <td>
-                        <div className="mpro-reasonCell">
-                          <code className="mpro-reasonTag">{reasonLabel(m)}</code>
-                          <button
-                            className="mpro-btn mpro-btnSm"
-                            onClick={() => setReasonFor(reasonFor === m.id ? null : m.id)}
-                          >
-                            {t('reasonEdit')}
-                          </button>
-                        </div>
+                      {/* 行内只有一个入口：能力徽标、来源说明、能力下拉、转发名、档位
+                          摘要这些一旦并排就会把表格撑宽（最长的那串是档位名与"来源未
+                          确认"），所以它们全部下沉到展开面板，按字段逐行排。 */}
+                      <td className="mpro-rowAction">
+                        <button
+                          className="mpro-btn mpro-btnSm"
+                          data-row={m.id}
+                          aria-expanded={configFor === m.id}
+                          onClick={() => toggleConfig(m.id)}
+                        >
+                          {configFor === m.id ? t('modelConfigClose') : t('modelConfigOpen')}
+                        </button>
                       </td>
                     </tr>
-                    {reasonFor === m.id && (
+                    {configFor === m.id && (
                       <tr>
-                        <td colSpan={6}>
-                          <ReasoningEditor
-                            t={t}
-                            call={call}
-                            route={route}
-                            model={m}
-                            catalog={catalog || { enabled: false, url: '' }}
-                            busy={busy}
-                            onSave={(v) => saveReasoning(m.id, v)}
-                            onClose={() => setReasonFor(null)}
-                          />
+                        <td colSpan={4}>
+                          <div className="mpro-configPanel">
+                            <div className="mpro-configField">
+                              <span className="mpro-configLabel">{t('inputCapabilityCol')}</span>
+                              <div className="mpro-capabilityCell">
+                                {capabilityBadge(m)}
+                                {capabilitySelect(
+                                  draftCapability(m.id) ?? (m.capabilitySource === 'manual' ? capabilityChoice(m) : 'auto'),
+                                  (choice) => setCapabilityDraft((d) => ({ ...d, [m.id]: choice })),
+                                  `${t('inputCapabilityCol')}: ${m.id}`,
+                                )}
+                              </div>
+                            </div>
+                            <div className="mpro-configField">
+                              <span className="mpro-configLabel">{t('reqModelField')}</span>
+                              <input
+                                aria-label={`${t('reqModelField')}: ${m.id}`}
+                                title={t('reqModelHint')}
+                                className="mpro-input mpro-inputMono mpro-wireInput"
+                                disabled={busy}
+                                value={m.requestModel || ''}
+                                placeholder="—"
+                                onChange={(e) => void setRequestModel(m.id, e.target.value)}
+                              />
+                            </div>
+                            <div className="mpro-configField">
+                              <span className="mpro-configLabel">{t('reasonCol')}</span>
+                              <code className="mpro-reasonTag" title={reasonDetail(m)}>{reasonLabel(m)}</code>
+                              <button
+                                className="mpro-btn mpro-btnSm"
+                                onClick={() => setReasonFor(reasonFor === m.id ? null : m.id)}
+                              >
+                                {t('reasonEditLevels')}
+                              </button>
+                            </div>
+                          </div>
+                          {reasonFor === m.id && (
+                            <ReasoningEditor
+                              t={t}
+                              call={call}
+                              route={route}
+                              model={m}
+                              catalog={catalog || { enabled: false, url: '' }}
+                              busy={busy}
+                              onSave={(v) => saveReasoning(m.id, v)}
+                              onClose={() => setReasonFor(null)}
+                            />
+                          )}
                         </td>
                       </tr>
                     )}
@@ -667,9 +787,72 @@ export function ModelsPanel({
                 ))}
               </tbody>
             </table>
+            {curVisible.length > shownRows && (
+              <div className="mpro-moreRows">
+                <button className="mpro-btn mpro-btnSm" disabled={busy} onClick={() => setShownRows((n) => n + ROW_PAGE)}>
+                  {fmt(t('showMoreRows'), { n: curVisible.length - shownRows })}
+                </button>
+                <span className="mpro-dim">{fmt(t('rowsShown'), { shown: Math.min(shownRows, curVisible.length), total: curVisible.length })}</span>
+              </div>
+            )}
           </div>
         )}
       </div>
+
+      {/* hidden (parked) models — taken out of the model selector, stored complete.
+          Kept visually distinct from the live list: these entries are NOT served by
+          the adapter, and a click puts them back at their original position.
+          While there is nothing parked, the whole block exists only to explain the
+          feature ONCE (see hideHintSeen); afterwards it stays out of the way. */}
+      {(hiddenModels.length > 0 || !hideHintSeen) && (
+      <div>
+        <div className="mpro-modelBar">
+          <p className="mpro-sectionTitle" style={{ margin: 0 }}>{fmt(t('hiddenModelsTitle'), { n: hiddenModels.length })}</p>
+          <span className="mpro-right" />
+          {hiddenModels.length > 0 && (
+            <button
+              className="mpro-btn mpro-btnSm"
+              disabled={busy}
+              onClick={() => void showHidden(hiddenModels.map((m) => m.id))}
+            >
+              {t('showAllHidden')}
+            </button>
+          )}
+        </div>
+        {hiddenModels.length === 0 ? (
+          <div className="mpro-emptyState">{t('hiddenModelsEmpty')}</div>
+        ) : (
+          <div className="mpro-tblWrap">
+            <table className="mpro-tbl">
+              <thead>
+                <tr>
+                  <th className="mpro-tblCk"></th>
+                  <th>{t('idCol')}</th>
+                  <th>{t('nameCol')}</th>
+                  <th>{t('reqModelField')}</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {hiddenModels.map((m) => (
+                  <tr key={m.id}>
+                    <td><span className="mpro-hiddenChip" title={t('stateHidden')}>{t('stateHidden')}</span></td>
+                    <td className="mpro-id">{m.id}</td>
+                    <td>{m.name || m.id}</td>
+                    <td className="mpro-dim">{m.requestModel || '—'}</td>
+                    <td>
+                      <button className="mpro-btn mpro-btnSm" disabled={busy} onClick={() => void showHidden([m.id])}>
+                        {t('showModel')}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+      )}
 
       {inlineStatus}
     </div>

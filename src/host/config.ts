@@ -52,6 +52,7 @@ const volatile = <T extends object>(schema: T): T =>
  */
 export const OWNED_STATE_KEYS = [
   'disabledProviders',
+  'hiddenModels',
   'modelCapabilities',
   'routes',
   'composites',

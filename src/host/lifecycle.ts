@@ -9,10 +9,22 @@
  * llm-pi-ai's schema — only this plugin understands it — so without this the
  * disabled providers (models included) would be silently lost the moment this
  * plugin is removed. Restoring is the "no data lost on uninstall" guarantee.
+ *
+ * The HIDDEN model bag is the same promise at model granularity, and it is the
+ * more dangerous of the two: a parked provider is still VISIBLE as a disabled
+ * card, while a parked model exists nowhere but this plugin's section. Its
+ * entries are merged back into whichever dict holds the route BEFORE the
+ * provider restore runs (so a hidden model of a disabled provider travels back
+ * with that provider), in the SAME write — one `writeSection` call, because a
+ * failure between two writes would leave "provider restored, models still
+ * parked" with the plugin already gone. The archive is cleared only after that
+ * write succeeds; a failure keeps it (data intact, retried on the next unload,
+ * and idempotent because merging skips ids that are already present).
  */
 
 import type { HostCtx } from './utils'
-import { readProviders, readDisabled, checkWritable, writeSection } from './utils'
+import { readProviders, readDisabled, isPlaceholderModel, checkWritable, writeSection } from './utils'
+import { readHiddenState, writeHiddenState, hiddenFor, withoutHidden } from './hiddenModels'
 import { migrateDisabledLayout } from './settings'
 
 /**
@@ -25,22 +37,59 @@ import { migrateDisabledLayout } from './settings'
  */
 export async function restoreDisabledOnUnload(ctx: HostCtx) {
   const st = ctx.get('settings')
-  if (st === undefined) return { restored: 0, skipped: 0 }
-  if (!checkWritable(st)) return { restored: 0, skipped: 0 }
+  if (st === undefined) return { restored: 0, skipped: 0, hiddenRestored: 0 }
+  if (!checkWritable(st)) return { restored: 0, skipped: 0, hiddenRestored: 0 }
 
   const providers = readProviders(st)
   const disabled = readDisabled(st)
+  const hidden = readHiddenState(st)
   const disabledRoutes = Object.keys(disabled)
-  if (disabledRoutes.length === 0) return { restored: 0, skipped: 0 }
+  const hiddenRoutes = Object.keys(hidden).filter((route) => hiddenFor(hidden, route) !== undefined)
+  if (disabledRoutes.length === 0 && hiddenRoutes.length === 0) return { restored: 0, skipped: 0, hiddenRestored: 0 }
 
   const nextProviders: Record<string, unknown> = {}
   const nextDisabled: Record<string, unknown> = {}
   let restored = 0
   let skipped = 0
+  let hiddenRestored = 0
 
   for (const k of Object.keys(providers)) nextProviders[k] = (providers as any)[k]
   for (const k of Object.keys(disabled)) nextDisabled[k] = (disabled as any)[k]
 
+  // 1) Hidden models FIRST, into whichever dict currently owns the route — so a
+  //    hidden model of a DISABLED provider is merged into the parked profile and
+  //    then travels back with it in step 2. Idempotent: an id already present in
+  //    the live list is skipped (it was re-added by the user while hidden).
+  let hiddenAfter = hidden
+  for (const route of Object.keys(hidden)) {
+    const parked = hiddenFor(hidden, route)
+    if (!parked) continue
+    const target = Object.prototype.hasOwnProperty.call(nextProviders, route)
+      ? nextProviders
+      : Object.prototype.hasOwnProperty.call(nextDisabled, route)
+        ? nextDisabled
+        : null
+    if (!target) continue // 提供商已被删除：模型没有归处，保持归档，不制造孤儿 route
+    const profile = { ...(target[route] as Record<string, unknown>) }
+    const list = Array.isArray(profile.models) ? [...(profile.models as unknown[])] : []
+    const present = new Set(list.map((m) => (m && typeof m === 'object' ? String((m as { id?: unknown }).id ?? '') : String(m))))
+    const merged: unknown[] = []
+    for (const item of [...parked.entries].sort((a, b) => a.index - b.index)) {
+      if (present.has(item.model.id)) continue
+      merged.push({ ...item.model })
+      present.add(item.model.id)
+      hiddenRestored += 1
+    }
+    if (merged.length) {
+      // 去掉占位哨兵：真实模型回来了，哨兵不再需要，留着会污染适配器的模型目录。
+      profile.models = [...list.filter((m) => !isPlaceholderModel(m)), ...merged]
+      target[route] = profile
+      hiddenAfter = withoutHidden(hiddenAfter, route, parked.entries.map((item) => item.model.id)).state
+    }
+  }
+
+  // 2) The parked providers, with their models (including the ones merged above)
+  //    and this plugin's `disabled: true` marker untouched.
   for (const route of disabledRoutes) {
     if (Object.prototype.hasOwnProperty.call(nextProviders, route)) {
       // Defensive: never clobber a provider that is already active. Its data is safe.
@@ -48,12 +97,13 @@ export async function restoreDisabledOnUnload(ctx: HostCtx) {
       continue
     }
     // The whole original profile moves back untouched — models, headers, credentials.
-    nextProviders[route] = disabled[route]
+    nextProviders[route] = nextDisabled[route]
     delete nextDisabled[route]
     restored += 1
   }
 
-  if (restored === 0) return { restored: 0, skipped }
+  const hiddenChanged = JSON.stringify(hiddenAfter) !== JSON.stringify(hidden)
+  if (restored === 0 && !hiddenChanged) return { restored: 0, skipped, hiddenRestored: 0 }
 
   try {
     await writeSection(st, nextProviders as any, nextDisabled as any)
@@ -61,10 +111,22 @@ export async function restoreDisabledOnUnload(ctx: HostCtx) {
     try {
       ;(ctx.get('logger') as any)?.warn?.(`dsh-model-pro: 卸载还原失败 — ${String((err as Error)?.message || err)}`)
     } catch { /* ignore */ }
-    return { restored: 0, skipped }
+    return { restored: 0, skipped, hiddenRestored: 0 }
   }
 
-  return { restored, skipped }
+  // Clear the archive only AFTER the models are back in the provider section; on
+  // failure they stay parked (data intact) and the next unload retries.
+  if (hiddenChanged) {
+    try {
+      await writeHiddenState(st, hiddenAfter)
+    } catch (err) {
+      try {
+        ;(ctx.get('logger') as any)?.warn?.(`dsh-model-pro: 隐藏模型归档清理失败（模型已还原，归档保留）— ${String((err as Error)?.message || err)}`)
+      } catch { /* ignore */ }
+    }
+  }
+
+  return { restored, skipped, hiddenRestored }
 }
 
 /**

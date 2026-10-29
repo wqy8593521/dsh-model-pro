@@ -160,15 +160,26 @@ export const CSS = [
   '.mpro-capabilityUnknown{color:var(--dsw-alias-label-tertiary)}',
   '.mpro-tblWrap{overflow:auto;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;max-height:320px}',
   // 当前模型沿用设置页纵向滚动，窗口变大时不再受 320px 限制；远端模型仍保持紧凑表格。
-  '.mpro-currentTblWrap{max-height:none}',
+  // 横向永不出现滚动条：行内没有任何配置控件，字段全在展开面板里按行排
+  // （见 .mpro-configPanel / .mpro-configField），所以"配置一个模型"不需要左右拖动。
+  '.mpro-currentTblWrap{max-height:none;overflow-x:hidden}',
+  // 行内只剩一个"配置"按钮；字段全部在展开面板里按行排（label 固定窄列，控件自适应），
+  // 因此无论某个模型的档位名/来源说明多长，都不会把表格撑宽。
+  '.mpro-rowAction{text-align:right;white-space:nowrap;width:1%}',
+  '.mpro-configPanel{display:flex;flex-direction:column;gap:8px;padding:10px 12px;border:1px solid var(--dsw-alias-border-l1);border-radius:10px;background:var(--dsw-alias-bg-layer-2);min-width:0}',
+  '.mpro-configField{display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-width:0}',
+  '.mpro-configLabel{flex:0 0 auto;min-width:76px;font-size:11px;color:var(--dsw-alias-label-secondary)}',
+  '.mpro-wireInput{flex:1 1 140px;min-width:110px;max-width:220px}',
+  '.mpro-moreRows{display:flex;align-items:center;gap:8px;padding:8px 10px;border-top:1px solid var(--dsw-alias-border-l1)}',
   '.mpro-tbl{width:100%;border-collapse:collapse;font-size:12px}',
   '.mpro-tbl th{position:sticky;top:0;text-align:left;padding:7px 10px;font-weight:600;color:var(--dsw-alias-label-secondary);border-bottom:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-3);white-space:nowrap;z-index:1}',
   '.mpro-tbl td{padding:6px 10px;border-bottom:1px solid var(--dsw-alias-border-l1);font-variant-numeric:tabular-nums}',
   '.mpro-tbl tr:last-child td{border-bottom:none}',
   '.mpro-tbl tbody tr:hover{background:var(--dsw-alias-interactive-bg-hover)}',
   '.mpro-tblCk{text-align:center;width:30px}',
-  '.mpro-tbl .mpro-id{font-family:var(--mpro-monospace);font-size:11.5px}',
+  '.mpro-tbl .mpro-id{font-family:var(--mpro-monospace);font-size:11.5px;overflow-wrap:anywhere}',
   '.mpro-tbl .mpro-dim{color:var(--dsw-alias-label-tertiary)}',
+  '.mpro-hiddenChip{font-size:10px;padding:1px 5px;border-radius:4px;white-space:nowrap;color:var(--dsw-alias-label-tertiary);background:var(--dsw-alias-bg-layer-3)}',
 
   // ---------- test ----------
   '.mpro-testCard{border:1px solid var(--dsw-alias-border-l1);border-radius:10px;background:var(--dsw-alias-bg-base);padding:14px;display:flex;flex-direction:column;gap:12px}',
@@ -239,19 +250,28 @@ export const CSS = [
   '.mpro-checkRow input{accent-color:var(--dsw-alias-button-primary-fill,var(--dsw-alias-brand-primary))}',
 
   // Thinking levels (reasoningEfforts) — list cell + per-model editor.
-  '.mpro-reasonCell{display:flex;align-items:center;gap:8px}',
-  '.mpro-reasonTag{font-family:var(--mpro-monospace);font-size:11px;color:var(--dsw-alias-label-tertiary);white-space:nowrap}',
+  // 行内只放"几档"的短摘要：完整的 off · minimal · … 列表放进 title 与高级区，
+  // 否则一行的宽度由最长的那串档位名决定（这正是横向溢出的来源）。
+  '.mpro-reasonTag{font-family:var(--mpro-monospace);font-size:11px;color:var(--dsw-alias-label-tertiary);white-space:nowrap;max-width:120px;overflow:hidden;text-overflow:ellipsis}',
   '.mpro-reasonBox{display:flex;flex-direction:column;gap:8px;padding:10px 12px;border:1px solid var(--dsw-alias-border-l1);border-radius:10px;background:var(--dsw-alias-bg-layer-2)}',
   '.mpro-reasonHead{display:flex;align-items:center;gap:8px;font-size:12px}',
   '.mpro-reasonModes{display:flex;gap:6px;flex-wrap:wrap}',
   '.mpro-reasonModes .mpro-pill{cursor:pointer;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-secondary)}',
   '.mpro-reasonLookup{display:flex;align-items:center;gap:10px;flex-wrap:wrap}',
   '.mpro-reasonCands{display:flex;flex-direction:column;gap:6px}',
-  '.mpro-reasonCand{display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;background:var(--dsw-alias-bg-base)}',
+  '.mpro-reasonCand{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 8px;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;background:var(--dsw-alias-bg-base)}',
+  // 档位表改成可换行的格子：每档一格（勾选 + 档名 + wire 值），窄屏自动折行，
+  // 不再靠固定 180px 输入框把高级区撑宽。
+  '.mpro-reasonGrid{display:flex;flex-wrap:wrap;gap:6px 10px}',
+  '.mpro-reasonLevelItem{display:flex;align-items:center;gap:6px;flex:1 1 200px;min-width:0;padding:5px 7px;border:1px solid var(--dsw-alias-border-l1);border-radius:7px;background:var(--dsw-alias-bg-base)}',
+  '.mpro-reasonLevelName{flex:0 0 auto;font-size:11px;font-family:var(--mpro-monospace);color:var(--dsw-alias-label-secondary)}',
+  '.mpro-reasonWire{flex:1 1 80px;min-width:0}',
+  '.mpro-reasonBox{min-width:0}',
+  '.mpro-reasonBox code{overflow-wrap:anywhere}',
   '.mpro-tierTag{font-size:10px;font-weight:600;letter-spacing:.02em;padding:2px 7px;border-radius:999px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-tertiary);white-space:nowrap}',
   '.mpro-tierExact{background:var(--dsw-alias-state-success-fill,rgba(22,163,74,.14));color:var(--dsw-alias-state-success-label,var(--dsw-alias-state-success-primary))}',
-  '.mpro-reasonLevels{font-family:var(--mpro-monospace);font-size:11px;color:var(--dsw-alias-label-primary-foreground,var(--dsw-alias-label-primary))}',
-  '.mpro-reasonFrom{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:220px}',
+  '.mpro-reasonLevels{font-family:var(--mpro-monospace);font-size:11px;color:var(--dsw-alias-label-primary-foreground,var(--dsw-alias-label-primary));overflow-wrap:anywhere}',
+  '.mpro-reasonFrom{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%;min-width:0}',
   '.mpro-reasonActions{display:flex;gap:8px}',
   // Alternate-candidate switcher inside the bulk-fill preview: one pill per
   // competing declaration, labelled with its level count (the ids that differ

@@ -3,7 +3,7 @@
 import { NS } from '../../shared/constants'
 import type { HostCtx } from '../utils'
 import { readProviders, readProfile } from '../utils'
-import { describeModelInput, normalizeModelInput } from '../modelCapabilities'
+import { describeModelInputs, normalizeModelInput } from '../modelCapabilities'
 
 export async function discoverModels(
   ctx: HostCtx,
@@ -30,13 +30,13 @@ export async function discoverModels(
   try {
     const disc = await llm.discoverModels(NS, request)
     // 发现结果保留 input 能力并绑定 discovery 来源：发现是元数据，不是人工声明。
-    const models = await Promise.all(disc.map((m) => describeModelInput(ctx, route, {
+    const models = await describeModelInputs(ctx, route, disc.map((m) => ({
       id: m.id,
       name: m.name || m.id,
       ...(m.contextWindow ? { contextWindow: m.contextWindow } : {}),
       ...(m.maxTokens ? { maxTokens: m.maxTokens } : {}),
       ...(normalizeModelInput(m.inputModalities ?? m.input) ? { input: normalizeModelInput(m.inputModalities ?? m.input) } : {}),
-    }, 'discovery')))
+    })), 'discovery')
     return { ok: true as const, models }
   } catch (err) {
     return { ok: false as const, error: String((err as Error)?.message || err) }

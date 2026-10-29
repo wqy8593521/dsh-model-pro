@@ -1,9 +1,8 @@
-/** UI preference handlers — the conversation badge toggle.
+/** UI preference handlers — small, profile-scoped UI choices.
  *
- * Preferences persist under the llm-pi-ai settings section (UI_PREFS_KEY) so
- * they follow the profile across browsers and reloads. Kept deliberately tiny:
- * today only `showRouteBadge`, merged over defaults so future keys can be
- * added without a migration.
+ * Preferences persist under this plugin's own settings section (UI_PREFS_KEY,
+ * which `Config` declares volatile) so they follow the profile across browsers
+ * and reloads. Merged over defaults, so a new key needs no migration.
  */
 
 import type { HostCtx } from '../utils'
@@ -14,15 +13,20 @@ export interface UiPrefs {
   /** Show a small badge under each routed turn naming the provider/model that
    * actually served it (default: true). */
   showRouteBadge: boolean
+  /** Whether the model editor has already explained "hide vs delete" and asked
+   * for confirmation once. Hiding is reversible by design, so the explanation
+   * and the dialog belong to the first use only (default: false). */
+  hiddenModelsHintSeen: boolean
 }
 
-const DEFAULTS: UiPrefs = { showRouteBadge: true }
+const DEFAULTS: UiPrefs = { showRouteBadge: true, hiddenModelsHintSeen: false }
 
 function normalize(raw: unknown): UiPrefs {
   const out: UiPrefs = { ...DEFAULTS }
   if (raw && typeof raw === 'object') {
     const r = raw as Record<string, unknown>
     if (typeof r.showRouteBadge === 'boolean') out.showRouteBadge = r.showRouteBadge
+    if (typeof r.hiddenModelsHintSeen === 'boolean') out.hiddenModelsHintSeen = r.hiddenModelsHintSeen
   }
   return out
 }

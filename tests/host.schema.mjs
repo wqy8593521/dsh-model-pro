@@ -23,6 +23,7 @@ import { buildConfig, OWNED_STATE_KEYS } from '../src/host/config.ts'
 import { SELF_CHECK_KEY } from '../src/host/compat.ts'
 import { CAPABILITIES_KEY } from '../src/host/capabilityStore.ts'
 import {
+  HIDDEN_MODELS_KEY,
   ROUTES_KEY,
   COMPOSITES_KEY,
   ROUTE_STATS_KEY,
@@ -46,6 +47,8 @@ import {
  */
 const WRITTEN_KEYS = [
   'disabledProviders',
+  // 隐藏模型归档：模型级"摘下/放回"的寄存区（applyModels 的 hide/show 与卸载还原都写它）。
+  HIDDEN_MODELS_KEY,
   CAPABILITIES_KEY,
   ROUTES_KEY,
   COMPOSITES_KEY,

@@ -1,9 +1,9 @@
 /** 模型能力使用明确配置或运行时目录；不按名称猜测未知模型是否支持图片。 */
 import { NS } from '../shared/constants'
-import type { ModelEntry, ModelInput, ModelCapabilitySource } from '../shared/types'
+import type { ModelEntry, ModelInput, ModelCapabilitySource, ProviderProfile } from '../shared/types'
 import type { HostCtx, LLMService } from './utils'
 import { readProviders, readDisabled, readProfile, readSection } from './utils'
-import { readCapabilityState, capabilityRecord, type CapabilityRecord } from './capabilityStore'
+import { readCapabilityState, capabilityRecord, type CapabilityRecord, type CapabilityState } from './capabilityStore'
 
 interface CatalogInputs {
   byRoute: Map<string, Map<string, ModelInput[] | null>>
@@ -23,6 +23,9 @@ export function normalizeModelInput(value: unknown): ModelInput[] | undefined {
 function declaredDefaultInput(ctx: HostCtx, route: string): ModelInput[] | undefined {
   const st = ctx.get('settings')
   if (!st) return undefined
+  // Kept as its own accessor so single-entry callers stay readable; callers that
+  // describe MANY entries of one route must pass the view instead (see
+  // `capabilityView`), because this reads the settings service on every call.
   const fromSection = (section: unknown): ModelInput[] | undefined => {
     if (!section || typeof section !== 'object') return undefined
     const providers = (section as Record<string, unknown>).providers
@@ -98,7 +101,14 @@ const officialInputs = new Map<string, ModelInput[]>([
 ])
 const DEEPSEEK_REFERENCE = 'https://api-docs.deepseek.com/updates/#deepseek-v41-flash-release'
 
-function automaticInput(ctx: HostCtx, route: string, entry: ModelEntry, catalog: CatalogInputs | undefined, allowTextDefault: boolean): CapabilityDetection {
+function automaticInput(
+  ctx: HostCtx,
+  route: string,
+  entry: ModelEntry,
+  catalog: CatalogInputs | undefined,
+  allowTextDefault: boolean,
+  defaultInput?: ModelInput[] | null,
+): CapabilityDetection {
   const id = typeof entry.requestModel === 'string' && entry.requestModel.trim() ? entry.requestModel.trim() : entry.id
   const own = catalog?.byRoute.get(route)
   const official = officialInputs.get(id)
@@ -109,7 +119,8 @@ function automaticInput(ctx: HostCtx, route: string, entry: ModelEntry, catalog:
     return { input, source: input ? 'catalog' : undefined, conflict: conflict || !!(input && official && input.join() !== official.join()) }
   }
   if (official) return { input: [...official], source: 'official', conflict, reference: DEEPSEEK_REFERENCE }
-  const providerDefault = declaredDefaultInput(ctx, route)
+  // `null` = resolved-to-none, `undefined` = caller resolved nothing for us.
+  const providerDefault = defaultInput === undefined ? declaredDefaultInput(ctx, route) : defaultInput ?? undefined
   const globalInput = catalog?.byId.get(id) ?? undefined
   if (allowTextDefault && providerDefault) return { input: providerDefault, source: 'provider-default', conflict }
   if (providerDefault?.includes('image') && !conflict) return { input: providerDefault, source: 'provider-default', conflict }
@@ -117,13 +128,50 @@ function automaticInput(ctx: HostCtx, route: string, entry: ModelEntry, catalog:
   return { conflict }
 }
 
-export async function resolveModelInput(ctx: HostCtx, route: string, entry: ModelEntry): Promise<ModelInput[] | undefined> {
+/**
+ * Everything one route's capability lookup needs, read ONCE.
+ *
+ * Why this exists at all: `describeModelInput` used to read the settings service
+ * per entry (profile + disabled dict + capability state + declared default
+ * input). On DSH 0.2 every one of those reads is a `describe()` over ALL
+ * sections, so describing a 300-model provider cost ~1200 `describe()` calls —
+ * the "model editor takes seconds to open" lag. Callers that loop must build the
+ * view once and pass it down; single-entry callers keep the one-argument shape.
+ */
+export interface CapabilityView {
+  profile: ProviderProfile | null
+  state: CapabilityState
+  /** `providers[route].defaultInput`, resolved once.
+   *
+   * `null` means "resolved, and the profile declares none" — that distinction is
+   * load-bearing: `undefined` would send the per-entry path back to the settings
+   * service for every model, which is the O(N) read this view exists to remove. */
+  defaultInput?: ModelInput[] | null
+}
+
+export function capabilityView(ctx: HostCtx, route: string): CapabilityView {
+  const st = ctx.get('settings')
+  if (!st) return { profile: null, state: {} }
+  try {
+    const profile = readProfile(readProviders(st), route) ?? readProfile(readDisabled(st), route)
+    return {
+      profile,
+      state: readCapabilityState(st),
+      ...(profile ? { defaultInput: normalizeModelInput(profile.defaultInput) ?? null } : {}),
+    }
+  } catch {
+    return { profile: null, state: {} }
+  }
+}
+
+export async function resolveModelInput(ctx: HostCtx, route: string, entry: ModelEntry, view?: CapabilityView): Promise<ModelInput[] | undefined> {
   const configured = normalizeModelInput(entry.input)
   if (configured) return configured
   // Harness 的 schema 会为缺失数组生成 []；与原生 declaredInput 一样视为未声明。
   if (entry.input !== undefined && !(Array.isArray(entry.input) && entry.input.length === 0)) return undefined
+  const prepared = view ?? capabilityView(ctx, route)
   const llm = ctx.get('llm')
-  return automaticInput(ctx, route, entry, llm ? await catalogInputs(llm) : undefined, true).input
+  return automaticInput(ctx, route, entry, llm ? await catalogInputs(llm) : undefined, true, prepared.defaultInput).input
 }
 
 /** 按钮显式请求一次目录识别，使用同一份快照处理全部模型，不发推理请求。 */
@@ -138,29 +186,36 @@ export async function detectModelInputs(ctx: HostCtx, route: string, entries: Mo
   const llm = ctx.get('llm')
   if (llm) catalogs.delete(llm)
   const catalog = llm ? await catalogInputs(llm) : undefined
+  // 识别是按 route 批量做的，所以默认输入只解析一次（否则每个模型一次 settings 读）。
+  const view = capabilityView(ctx, route)
   for (const entry of entries) {
-    const result = automaticInput(ctx, route, entry, catalog, false)
+    const result = automaticInput(ctx, route, entry, catalog, false, view.defaultInput)
     results.set(entry.id, result)
     if (result.input) inputs.set(entry.id, [...result.input])
   }
   return { inputs, results, catalogUnavailable: !catalog || !catalog.complete || catalog.byRoute.size === 0 }
 }
 
-export function savedModelCapability(ctx: HostCtx, route: string, entry: ModelEntry): CapabilityRecord | undefined {
-  const st = ctx.get('settings')
-  if (!st) return undefined
-  const profile = readProfile(readProviders(st), route) ?? readProfile(readDisabled(st), route)
-  return profile ? capabilityRecord(readCapabilityState(st), route, profile, entry) : undefined
+export function savedModelCapability(ctx: HostCtx, route: string, entry: ModelEntry, view?: CapabilityView): CapabilityRecord | undefined {
+  const prepared = view ?? capabilityView(ctx, route)
+  return prepared.profile ? capabilityRecord(prepared.state, route, prepared.profile, entry) : undefined
 }
 
 /** 读操作附加来源；原生配置只持久化 input，来源另存插件状态。 */
-export async function describeModelInput(ctx: HostCtx, route: string, entry: ModelEntry, explicitSource: ModelCapabilitySource = 'configured'): Promise<ModelEntry> {
+export async function describeModelInput(
+  ctx: HostCtx,
+  route: string,
+  entry: ModelEntry,
+  explicitSource: ModelCapabilitySource = 'configured',
+  view?: CapabilityView,
+): Promise<ModelEntry> {
   const explicit = normalizeModelInput(entry.input)
-  const saved = explicitSource === 'configured' ? savedModelCapability(ctx, route, entry) : undefined
+  const prepared = view ?? capabilityView(ctx, route)
+  const saved = explicitSource === 'configured' ? savedModelCapability(ctx, route, entry, prepared) : undefined
   const llm = ctx.get('llm')
   const undeclared = entry.input === undefined || (Array.isArray(entry.input) && entry.input.length === 0)
   // 展示和识别统一：通用文本默认不足以确认某个未知型号只能输入文本。
-  const inferred = explicit || !undeclared ? undefined : automaticInput(ctx, route, entry, llm ? await catalogInputs(llm) : undefined, false)
+  const inferred = explicit || !undeclared ? undefined : automaticInput(ctx, route, entry, llm ? await catalogInputs(llm) : undefined, false, prepared.defaultInput)
   const input = explicit ?? inferred?.input
   const out = { ...entry }
   delete out.capabilitySource
@@ -174,4 +229,26 @@ export async function describeModelInput(ctx: HostCtx, route: string, entry: Mod
   }
   if (saved?.conflict ?? inferred?.conflict) out.capabilityConflict = true
   return out
+}
+
+/**
+ * Describe MANY entries of one route with ONE settings read.
+ *
+ * `get-provider` and the discovery path describe whole model lists, and the
+ * per-entry version of that loop is what made a large provider's editor take
+ * seconds to open on DSH 0.2 (every entry re-read profile + capability state
+ * through `describe()`, which projects the whole settings document).
+ *
+ * Entries are processed in the given order; the catalog promise is shared, so
+ * the first call may still resolve it.
+ */
+export async function describeModelInputs(
+  ctx: HostCtx,
+  route: string,
+  entries: ModelEntry[],
+  explicitSource: ModelCapabilitySource = 'configured',
+): Promise<ModelEntry[]> {
+  if (!entries.length) return []
+  const view = capabilityView(ctx, route)
+  return Promise.all(entries.map((entry) => describeModelInput(ctx, route, entry, explicitSource, view)))
 }
