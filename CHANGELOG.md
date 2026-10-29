@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.1.0 — 2026-10-29
+
+- feat(models): hide/show models, panel-based config, and O(1) capability reads
+- docs: polish the 2.0.2 notes and document 0.2 write semantics in the README
+
 ## 2.0.2 — 2026-10-09
 
 - fix(compat) — **a partial write into the plugin's own settings section no longer resets the owned keys it does not mention (#6).** DSH 0.2's `SettingsForms.replace()` is "Reset all live fields, then set the supplied fields" — its write is `mergeLayers(strip(raw, form), next)`, which deletes every declared volatile field from the stored patch and re-materialises only what the caller supplied. Two call sites passed a partial section, so `routes`, `composites`, `uiPrefs`, `routerRetry`, `modelCatalog`, `localGateway`, `modelCapabilities`, `routeStats` and `disabledProviders` were silently reset to their defaults on every provider add/edit/enable/disable/delete, and again on every `dsh` startup.
